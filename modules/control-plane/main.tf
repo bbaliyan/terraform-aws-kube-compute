@@ -252,7 +252,7 @@ module "node_bootstrap" {
   source = "../node-bootstrap"
 
   cluster_name                    = var.cluster_name
-  node_name                       = "${var.cluster_name}-cp-1"
+  node_name                       = "cp-${var.cluster_name}-1"
   node_fqdn_label                 = "cp-1"
   cluster_fqdn                    = local.cluster_fqdn
   cluster_fqdn_suffix             = local.fqdn_suffix
@@ -296,7 +296,7 @@ module "node_bootstrap_additional" {
   source = "../node-bootstrap"
 
   cluster_name         = var.cluster_name
-  node_name            = "${var.cluster_name}-cp-${tonumber(each.key) + 1}"
+  node_name            = "cp-${var.cluster_name}-${tonumber(each.key) + 1}"
   node_fqdn_label      = "cp-${tonumber(each.key) + 1}"
   cluster_fqdn         = local.cluster_fqdn
   cluster_fqdn_suffix  = local.fqdn_suffix
@@ -339,13 +339,13 @@ resource "aws_instance" "control_plane_additional" {
     volume_size           = var.root_volume_size_gb
     encrypted             = true
     delete_on_termination = true
-    tags                  = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-cp-${tonumber(each.key) + 1}-root" })
+    tags                  = merge(local.common_tags, { Name = "cp-${var.cluster_name}-${tonumber(each.key) + 1}-root" })
   }
 
   user_data_base64            = base64gzip(local.combined_user_data[each.key])
   user_data_replace_on_change = true
 
-  tags = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-cp-${tonumber(each.key) + 1}" })
+  tags = merge(local.common_tags, { Name = "cp-${var.cluster_name}-${tonumber(each.key) + 1}" })
 
   depends_on = [aws_instance.control_plane]
 
@@ -562,13 +562,13 @@ resource "aws_instance" "control_plane" {
     volume_size           = var.root_volume_size_gb
     encrypted             = true
     delete_on_termination = true
-    tags                  = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-root" })
+    tags                  = merge(local.common_tags, { Name = "cp-${var.cluster_name}-1-root" })
   }
 
   user_data_base64            = base64gzip(local.combined_user_data["0"])
   user_data_replace_on_change = true # disposable nodes: replace on bootstrap change
 
-  tags = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}" })
+  tags = merge(local.common_tags, { Name = "cp-${var.cluster_name}-1" })
 
   # Marks every attached EBS volume (root + any CSI-provisioned data volumes)
   # delete-on-termination right before the instance is destroyed, so AWS cleans them up

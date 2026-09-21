@@ -20,7 +20,7 @@ locals {
 
   # Keys start at 1, matching aws-control-plane's own cp-1/cp-2 naming.
   node_keys  = { for i in range(var.node_count) : tostring(i + 1) => i + 1 }
-  node_names = { for k, _ in local.node_keys : k => "${var.cluster_name}-${var.group_name}-${k}" }
+  node_names = { for k, _ in local.node_keys : k => "${var.group_name}-${var.cluster_name}-${k}" }
 
   # AlmaLinux community AMIs "likely" ship SSM Agent but not guaranteed running.
   connectivity_user_data = <<-EOT

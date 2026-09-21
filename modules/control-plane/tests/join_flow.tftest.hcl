@@ -67,15 +67,15 @@ run "registration_address_and_node_refs" {
     error_message = "for control_plane_count=1, registration_address must be the sole control-plane node's private IP"
   }
   assert {
-    condition     = keys(output.control_plane_node_refs) == ["bharat-cp-1"]
+    condition     = keys(output.control_plane_node_refs) == ["cp-bharat-1"]
     error_message = "control_plane_node_refs must map a deterministic node name to its ref"
   }
   assert {
-    condition     = output.control_plane_node_refs["bharat-cp-1"].instance_id == aws_instance.control_plane.id
+    condition     = output.control_plane_node_refs["cp-bharat-1"].instance_id == aws_instance.control_plane.id
     error_message = "each node ref must carry the instance id"
   }
   assert {
-    condition     = output.control_plane_node_refs["bharat-cp-1"].provider == "aws"
+    condition     = output.control_plane_node_refs["cp-bharat-1"].provider == "aws"
     error_message = "each node ref must report its provider"
   }
 }

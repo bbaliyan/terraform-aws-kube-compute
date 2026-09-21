@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 locals {
-  node_name = "${var.cluster_name}-${var.group_name}"
+  node_name     = "${var.group_name}-${var.cluster_name}"
+  resource_name = "kube-compute-${var.cluster_name}-${var.group_name}"
 
   # An IAM name_prefix caps at 38 characters.
   iam_name_prefix = substr(format("kube-compute-%s-%s-", var.cluster_name, var.group_name), 0, 38)
@@ -104,7 +105,7 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
 }
 
 resource "aws_iam_role_policy" "agent_token" {
-  name = "kube-compute-${local.node_name}-agent-token-read"
+  name = "${local.resource_name}-agent-token-read"
   role = aws_iam_role.node.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -157,7 +158,7 @@ module "node_bootstrap" {
 resource "aws_launch_template" "node" {
   for_each = var.instance_type_max_sizes
 
-  name_prefix   = "kube-compute-${local.node_name}-${replace(each.key, ".", "-")}-"
+  name_prefix   = "${local.resource_name}-${replace(each.key, ".", "-")}-"
   image_id      = local.effective_ami_id[each.key]
   instance_type = each.key
 
@@ -198,7 +199,7 @@ resource "aws_launch_template" "node" {
 resource "aws_autoscaling_group" "node" {
   for_each = var.instance_type_max_sizes
 
-  name                = "kube-compute-${local.node_name}-${replace(each.key, ".", "-")}"
+  name                = "${local.resource_name}-${replace(each.key, ".", "-")}"
   min_size            = 0
   max_size            = each.value
   vpc_zone_identifier = [var.subnet_id]

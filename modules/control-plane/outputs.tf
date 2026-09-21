@@ -84,14 +84,14 @@ output "control_plane_node_refs" {
   description = "Map of control-plane node name -> {instance_id, provider}. The control-plane abstraction (SSM send-command today) targets every node from this map instead of a single node_control_ref."
   value = merge(
     {
-      "${var.cluster_name}-cp-1" = {
+      "cp-${var.cluster_name}-1" = {
         instance_id = aws_instance.control_plane.id
         provider    = "aws"
       }
     },
     {
       for i, inst in aws_instance.control_plane_additional :
-      "${var.cluster_name}-cp-${tonumber(i) + 1}" => {
+      "cp-${var.cluster_name}-${tonumber(i) + 1}" => {
         instance_id = inst.id
         provider    = "aws"
       }

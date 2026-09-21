@@ -41,9 +41,9 @@ run "named_instances_not_a_group" {
   }
   assert {
     condition = alltrue([
-      for name, _ in output.node_refs : contains(["bharat-platform-1", "bharat-platform-2"], name)
+      for name, _ in output.node_refs : contains(["platform-bharat-1", "platform-bharat-2"], name)
     ])
-    error_message = "node names must be <cluster>-<group>-<n>, numbered from 1 like the control plane's own cp-1/cp-2"
+    error_message = "node names must be <group>-<cluster>-<n>, numbered from 1 like the control plane's own cp-<cluster>-1"
   }
   assert {
     condition     = alltrue([for k, i in aws_instance.node : contains(i.vpc_security_group_ids, "sg-cluster123")])
@@ -97,7 +97,7 @@ run "each_node_gets_its_own_hostname_and_the_groups_taints" {
   }
 
   assert {
-    condition     = yamldecode(module.node_bootstrap["1"].cloud_init_user_data).hostname == "bharat-dedicated-1"
+    condition     = yamldecode(module.node_bootstrap["1"].cloud_init_user_data).hostname == "dedicated-bharat-1"
     error_message = "each node's cloud-init must set its own hostname -- RKE2 registers the Kubernetes node name from it, and a name Terraform chose is the reason this module exists"
   }
   assert {
