@@ -41,7 +41,7 @@ run "a_cluster_without_autoscaling_only_stops_its_nodes" {
   command = apply
 
   variables {
-    power_schedule = { stop_time = "20:00", timezone = "Australia/Sydney" }
+    power_schedule = { stop_time = "20:00", timezone = "UTC" }
   }
 
   assert {
@@ -128,19 +128,19 @@ run "a_working_week_starts_and_stops_on_its_days" {
   }
 }
 
-# The same working week in UTC: Sunday 20:40 to Monday 16:10, up to Thursday
-# 20:40 to Friday 16:10, and off from Friday afternoon to Sunday evening.
+# The same working week in UTC: Sunday 22:00 to Monday 18:00, up to Thursday
+# 22:00 to Friday 18:00, and off from Friday afternoon to Sunday evening.
 run "hours_across_midnight_start_the_evening_before" {
   command = apply
 
   variables {
-    power_schedule = { days = "MON-FRI", start_time = "20:40", stop_time = "16:10", timezone = "UTC" }
+    power_schedule = { days = "MON-FRI", start_time = "22:00", stop_time = "18:00", timezone = "UTC" }
   }
 
   assert {
     condition = (
-      aws_scheduler_schedule.stop[0].schedule_expression == "cron(10 16 ? * MON-FRI *)" &&
-      aws_scheduler_schedule.start[0].schedule_expression == "cron(40 20 ? * SUN-THU *)"
+      aws_scheduler_schedule.stop[0].schedule_expression == "cron(0 18 ? * MON-FRI *)" &&
+      aws_scheduler_schedule.start[0].schedule_expression == "cron(0 22 ? * SUN-THU *)"
     )
     error_message = "a start later than the stop must fire the evening before each day the cluster runs"
   }
@@ -208,7 +208,7 @@ run "the_start_time_must_differ_from_the_stop_time" {
   command = plan
 
   variables {
-    power_schedule = { start_time = "16:10", stop_time = "16:10", timezone = "UTC" }
+    power_schedule = { start_time = "18:00", stop_time = "18:00", timezone = "UTC" }
   }
 
   expect_failures = [var.power_schedule]
@@ -218,7 +218,7 @@ run "the_stop_time_must_be_a_clock_time" {
   command = plan
 
   variables {
-    power_schedule = { stop_time = "8pm", timezone = "Australia/Sydney" }
+    power_schedule = { stop_time = "8pm", timezone = "UTC" }
   }
 
   expect_failures = [var.power_schedule]

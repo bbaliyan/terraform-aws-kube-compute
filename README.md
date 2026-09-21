@@ -44,7 +44,7 @@ module "cluster" {
     }
   }
 
-  power_schedule = { stop_time = "20:00", timezone = "Australia/Sydney" }
+  power_schedule = { stop_time = "20:00", timezone = "UTC" }
 }
 ```
 
@@ -145,13 +145,13 @@ later, the hours cross midnight and each day's run starts the evening before:
 ```hcl
 power_schedule = {
   days       = "MON-FRI"
-  start_time = "20:40"
-  stop_time  = "16:10"
+  start_time = "22:00"
+  stop_time  = "18:00"
   timezone   = "UTC"
 }
 ```
 
-This runs Sunday 20:40 to Monday 16:10, up to Thursday 20:40 to Friday 16:10, and
+This runs Sunday 22:00 to Monday 18:00, up to Thursday 22:00 to Friday 18:00, and
 is off from Friday afternoon to Sunday evening. The stop fires `MON-FRI` and the
 start `SUN-THU`. A time zone without daylight saving, such as UTC, keeps those
 hours the same all year in every location.
