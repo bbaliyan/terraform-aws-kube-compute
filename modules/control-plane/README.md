@@ -170,9 +170,9 @@ parameter name.
 
 ## Out of scope (lives in the consumer repo)
 
-Team-specific operational policy is **not** in this module — e.g. a nightly stop schedule. Add
-an `aws_scheduler_schedule` in your own config referencing the `instance_id` output if you want
-one.
+Team-specific operational policy is **not** in this module — e.g. a schedule that stops and
+starts the nodes. `aws-cluster` has one, `power_schedule`. Used on its own, this module needs an
+`aws_scheduler_schedule` in your own config referencing the `instance_id` output.
 
 ## Testing
 

@@ -192,7 +192,7 @@ variable "vpc_name" {
 }
 
 variable "subnet_names" {
-  description = "Candidate subnets by Name tag, tried in order; the control-plane node launches into the first with a free IP. List form of subnet_name — see the aws-control-plane module for the ordering caveat."
+  description = "Candidate subnets by Name tag, in order of preference. A new cluster is placed in the first with a free address for the control plane and every static node without its own subnet_id; the whole cluster then stays in that subnet for good, even as it fills. Candidates may be in different availability zones. List form of subnet_name; see the aws-control-plane module."
   type        = list(string)
   default     = null
 }
@@ -301,40 +301,45 @@ variable "platform_node_group" {
   }
 }
 
-variable "nightly_stop" {
-  description = "At time (HH:MM, 24-hour) in timezone, on days, stops the control plane and static nodes and scales every autoscaled group to zero. With start_time, starts the control plane and static nodes again at that time on start_days; without it nothing starts the cluster. start_days defaults to days, and differs when the hours the cluster runs cross midnight, e.g. starting SUN-THU at 21:40 and stopping MON-FRI at 17:10. Days of the week are in EventBridge Scheduler's form (e.g. MON-FRI); unset, every day. Null never stops it."
+variable "power_schedule" {
+  description = <<-EOT
+    When the cluster's nodes run. days names the days it runs, in EventBridge Scheduler's form
+    (MON-FRI, MON,WED,FRI); on the other days it is off. Unset, every day.
+
+    At stop_time on each of those days, stops the control plane and static nodes and scales every
+    autoscaled group to zero. With start_time, starts the control plane and static nodes again: on
+    the same day when start_time is earlier than stop_time, or on the evening before when it is
+    later, for hours that cross midnight. Without start_time nothing starts the cluster; it stays
+    stopped until started by hand. Times are HH:MM on a 24-hour clock, in timezone.
+
+    Null leaves the cluster running.
+  EOT
   type = object({
-    time       = string
+    stop_time  = string
     timezone   = string
     start_time = optional(string)
     days       = optional(string)
-    start_days = optional(string)
   })
   default = null
 
   validation {
-    condition     = var.nightly_stop == null ? true : can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.nightly_stop.time))
-    error_message = "nightly_stop.time must be HH:MM on a 24-hour clock."
+    condition     = var.power_schedule == null ? true : can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.power_schedule.stop_time))
+    error_message = "power_schedule.stop_time must be HH:MM on a 24-hour clock."
   }
 
   validation {
-    condition     = try(var.nightly_stop.start_time, null) == null ? true : can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.nightly_stop.start_time))
-    error_message = "nightly_stop.start_time must be HH:MM on a 24-hour clock."
+    condition     = try(var.power_schedule.start_time, null) == null ? true : can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.power_schedule.start_time))
+    error_message = "power_schedule.start_time must be HH:MM on a 24-hour clock."
   }
 
   validation {
-    condition     = try(var.nightly_stop.days, null) == null ? true : can(regex("^(SUN|MON|TUE|WED|THU|FRI|SAT)(-(SUN|MON|TUE|WED|THU|FRI|SAT))?(,(SUN|MON|TUE|WED|THU|FRI|SAT)(-(SUN|MON|TUE|WED|THU|FRI|SAT))?)*$", var.nightly_stop.days))
-    error_message = "nightly_stop.days must be days of the week such as MON-FRI or MON,WED,FRI."
+    condition     = try(var.power_schedule.start_time, null) == null || try(var.power_schedule.start_time != var.power_schedule.stop_time, true)
+    error_message = "power_schedule.start_time must differ from stop_time."
   }
 
   validation {
-    condition     = try(var.nightly_stop.start_days, null) == null ? true : can(regex("^(SUN|MON|TUE|WED|THU|FRI|SAT)(-(SUN|MON|TUE|WED|THU|FRI|SAT))?(,(SUN|MON|TUE|WED|THU|FRI|SAT)(-(SUN|MON|TUE|WED|THU|FRI|SAT))?)*$", var.nightly_stop.start_days))
-    error_message = "nightly_stop.start_days must be days of the week such as SUN-THU or MON,WED,FRI."
-  }
-
-  validation {
-    condition     = try(var.nightly_stop.start_days, null) == null || try(var.nightly_stop.start_time, null) != null
-    error_message = "nightly_stop.start_days needs start_time."
+    condition     = try(var.power_schedule.days, null) == null ? true : can(regex("^(SUN|MON|TUE|WED|THU|FRI|SAT)(-(SUN|MON|TUE|WED|THU|FRI|SAT))?(,(SUN|MON|TUE|WED|THU|FRI|SAT)(-(SUN|MON|TUE|WED|THU|FRI|SAT))?)*$", var.power_schedule.days))
+    error_message = "power_schedule.days must be days of the week such as MON-FRI or MON,WED,FRI."
   }
 }
 

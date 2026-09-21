@@ -10,6 +10,11 @@ locals {
 
   autoscaling_enabled = length(var.autoscaled_nodes) > 0
 
+  # Every node that launches with the cluster into the control plane's subnet: the control plane
+  # and each static node without a subnet of its own. The subnet a new cluster is placed in must
+  # have this many free addresses.
+  launch_ip_count = sum(concat([1], [for group in var.static_nodes : group.node_count if group.subnet_id == null]))
+
   platform_node_iam_role_name = coalesce(
     one([for name, group in module.static_nodes : group.node_iam_role_name if name == var.platform_node_group]),
     module.control_plane.node_iam_role_name,
@@ -99,6 +104,7 @@ module "control_plane" {
   vpc_name                          = var.vpc_name
   subnet_name                       = var.subnet_name
   subnet_names                      = var.subnet_names
+  subnet_min_free_ips               = local.launch_ip_count
   cluster_domain                    = var.cluster_domain
   manage_wildcard_dns_record        = var.platform_node_group == null
   hosted_zone_name                  = var.hosted_zone_name

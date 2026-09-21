@@ -72,7 +72,7 @@ run "groups_inherit_the_control_planes_subnet" {
 
   assert {
     condition     = length(output.all_instance_ids) == 4
-    error_message = "all_instance_ids must cover the control plane plus every static node (1 + 1 + 2), or a nightly stop schedule fed from it leaves the workers running around the clock"
+    error_message = "all_instance_ids must cover the control plane plus every static node (1 + 1 + 2), or a power schedule fed from it leaves the workers running around the clock"
   }
 
   assert {
@@ -137,4 +137,41 @@ run "platform_node_group_must_name_a_static_group" {
   }
 
   expect_failures = [var.platform_node_group]
+}
+
+# A new cluster's subnet must hold every node that launches with it: the control
+# plane plus each static node in its subnet. A group with its own subnet_id
+# launches elsewhere and is not counted.
+run "launch_ip_count_covers_static_nodes_in_the_subnet" {
+  command = plan
+
+  variables {
+    subnet_id    = null
+    subnet_names = ["private-az1", "private-az2"]
+    static_nodes = {
+      platform = {
+        instance_type = "t4g.large"
+        node_count    = 1
+      }
+      dedicated = {
+        instance_type = "r5a.large"
+        node_count    = 2
+      }
+      elsewhere = {
+        instance_type = "t4g.large"
+        node_count    = 5
+        subnet_id     = "subnet-elsewhere"
+      }
+    }
+  }
+
+  override_data {
+    target = module.control_plane.data.aws_subnet.by_name
+    values = { id = "subnet-pool", available_ip_address_count = 250 }
+  }
+
+  assert {
+    condition     = local.launch_ip_count == 4
+    error_message = "launch_ip_count must be the control plane plus the 3 static nodes sharing its subnet, got ${local.launch_ip_count}"
+  }
 }

@@ -62,8 +62,9 @@ in both directions. Latency is not the reason — inside a region it is low
 single-digit milliseconds and multi-zone clusters are routine.
 
 Doing it this way rather than restricting the cluster to a single subnet keeps
-`aws-control-plane`'s ordered `subnet_names` search intact, so the cluster can
-still fall through to a second subnet when the first runs out of addresses.
+`aws-control-plane`'s ordered `subnet_names` search intact, so a new cluster can
+still fall through to a second subnet when the first lacks room for it. Once
+placed, the cluster stays in that subnet for good.
 
 ## Labels and taints
 

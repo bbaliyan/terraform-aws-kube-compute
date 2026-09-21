@@ -164,13 +164,15 @@ variable "subnet_name" {
 
 variable "subnet_names" {
   description = <<-EOT
-    Candidate subnets by Name tag, tried IN ORDER: the node launches into the first one that still
-    has a free IP address. The list form of subnet_name, for spreading a cluster's placement across
-    several AZs without pinning it to one that may fill up.
+    Candidate subnets by Name tag, in order of preference. A new cluster is placed in the first one
+    with subnet_min_free_ips free addresses, so a full subnet, or one too nearly full to take the
+    cluster, falls through to the next. The list form of subnet_name.
 
-    Order is a preference, not a set — selection stops at the first subnet with capacity, so a node
-    stays where it is for as long as that subnet has room. Put the subnet an existing node already
-    occupies first, or the next apply moves it, which REPLACES the instance.
+    The choice is made once. A cluster whose control plane already exists, running or stopped,
+    stays in that control plane's subnet whatever this list says or however full that subnet
+    becomes: it is never moved by an apply. The candidates may be in different availability zones,
+    since a cluster only ever occupies the one it was placed in. To move a cluster, destroy it and
+    apply again.
   EOT
   type        = list(string)
   default     = null
@@ -183,6 +185,17 @@ variable "subnet_names" {
   validation {
     condition     = var.subnet_names == null || var.subnet_name == null
     error_message = "Set subnet_name or subnet_names, not both."
+  }
+}
+
+variable "subnet_min_free_ips" {
+  description = "Free IP addresses a subnet_names candidate needs before a new cluster is placed in it: one for each node launched with the cluster, not only the control plane. aws-cluster passes the control plane plus its static nodes. Nodes added later, by the autoscaler, are not counted."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.subnet_min_free_ips >= 1
+    error_message = "subnet_min_free_ips must be at least 1."
   }
 }
 

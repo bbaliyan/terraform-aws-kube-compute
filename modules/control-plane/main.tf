@@ -79,14 +79,24 @@ locals {
   # Whether the caller pinned placement at all. When they did not, the default-VPC fallback applies.
   has_explicit_subnet = var.subnet_id != null || length(local.subnet_name_candidates) > 0
 
-  # First candidate, in the caller's order, that still has a free IP. Preserving their order rather
-  # than picking the emptiest subnet is what keeps placement stable: a node only moves when the
-  # subnet it sits in is genuinely full, and moving it REPLACES the instance.
-  named_subnet_id = try([
+  # Whether the subnet comes from subnet_names, the only case where the module chooses one.
+  chooses_subnet = var.subnet_id == null && length(local.subnet_name_candidates) > 0
+
+  # The subnet an existing control plane already sits in. A cluster stays there: the candidates are
+  # read afresh on every plan, and without this a subnet filling up after the cluster was placed
+  # would move it, replacing every node and leaving its EBS volumes in the zone it left.
+  existing_subnet_id = try(data.aws_instance.existing_control_plane[0].subnet_id, null)
+
+  # For a new cluster, the first candidate in the caller's order with room for every node it
+  # launches with. A subnet with some free addresses but too few would be chosen, then fail the
+  # apply partway through.
+  roomy_subnet_id = try([
     for name in local.subnet_name_candidates :
     data.aws_subnet.by_name[name].id
-    if data.aws_subnet.by_name[name].available_ip_address_count > 0
+    if data.aws_subnet.by_name[name].available_ip_address_count >= var.subnet_min_free_ips
   ][0], null)
+
+  named_subnet_id = local.existing_subnet_id != null ? local.existing_subnet_id : local.roomy_subnet_id
 
   # Network handle: explicit subnet_id → named subnet → first default-VPC subnet. Never creates fabric.
   # Wrapped in try so that resolving to nothing stays null: coalesce raises on all-null arguments,

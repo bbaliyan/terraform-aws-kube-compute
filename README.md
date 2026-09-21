@@ -44,7 +44,7 @@ module "cluster" {
     }
   }
 
-  nightly_stop = { time = "20:00", timezone = "Australia/Sydney" }
+  power_schedule = { stop_time = "20:00", timezone = "Australia/Sydney" }
 }
 ```
 
@@ -59,6 +59,17 @@ module "cluster" {
 Static and autoscaled nodes launch into the control plane's subnet, so the
 cluster stays in one availability zone: an EBS volume cannot cross zones. A
 static group can take its own `subnet_id` as a deliberate exception.
+
+`subnet_names` is a list of candidates for that one subnet, not a set to spread
+across, so the candidates may sit in different zones. A new cluster goes into the
+first candidate with a free address for the control plane and every static node
+that shares its subnet. A candidate with some free addresses but too few is
+skipped, rather than chosen and failing the apply partway. Once the control plane
+exists, running or stopped, the cluster stays in its subnet: the choice is never
+made again, however full that subnet becomes or however the list changes. Moving
+a cluster means destroying it and applying again. Autoscaled workers are not
+counted, since they launch later; one that finds the subnet full fails to join
+until addresses free up.
 
 Every node carries `kube-compute.io/node-group=<key>`: the static group's name, or
 the autoscaled role's, whatever the node's size. `node_taints` keeps other pods
@@ -112,28 +123,45 @@ sum of their caps. Each Auto Scaling group's maximum is how many of its type fit
 its role's caps alone, and an instance type larger than its role's caps fails the
 plan.
 
-## Nightly stop
+## Power schedule
 
-`nightly_stop` stops the control plane and static nodes at the given time, and at
-the same moment sets every autoscaled group to zero, because an instance in an
-Auto Scaling group cannot be stopped. Those schedules sit in the
-`<cluster_name>-to-zero` schedule group, one per role and instance type. Nothing is left running to scale the groups
-back up. When the cluster is started again, the lifecycle controller removes the
-old nodes and the autoscaler adds new ones as pods need them.
+`power_schedule` says when the cluster's nodes run. `days` names the days it runs,
+in EventBridge Scheduler's form (`MON-FRI`, `MON,WED,FRI`); it is off on the
+rest. Unset, it runs every day.
+
+At `stop_time` on each of those days it stops the control plane and static
+nodes, and at the same moment sets every autoscaled group to zero, because an
+instance in an Auto Scaling group cannot be stopped. Those schedules sit in the
+`<cluster_name>-to-zero` schedule group, one per role and instance type. Nothing
+is left running to scale the groups back up. When the cluster is started again,
+the lifecycle controller removes the old nodes and the autoscaler adds new ones
+as pods need them.
 
 Nothing starts the cluster unless `start_time` is set, in which case the
-`<cluster_name>-node-start` schedule starts the control plane and static nodes at
-that time. `days` limits the stop to days of the week, in EventBridge Scheduler's
-form, and `start_days` the start, defaulting to `days`:
+`<cluster_name>-node-start` schedule starts the control plane and static nodes.
+When `start_time` is earlier than `stop_time`, that is on the same day. When it is
+later, the hours cross midnight and each day's run starts the evening before:
 
 ```hcl
-nightly_stop = { time = "16:10", days = "MON-FRI", start_time = "20:40", start_days = "SUN-THU", timezone = "UTC" }
+power_schedule = {
+  days       = "MON-FRI"
+  start_time = "20:40"
+  stop_time  = "16:10"
+  timezone   = "UTC"
+}
 ```
 
-Both are clock times on the listed days, so hours that cross midnight start on
-the day before they stop: here the cluster runs Sunday 20:40 to Monday 16:10, up
-to Thursday 20:40 to Friday 16:10. A time zone without daylight saving, such as
-UTC, keeps those hours the same all year in every location.
+This runs Sunday 20:40 to Monday 16:10, up to Thursday 20:40 to Friday 16:10, and
+is off from Friday afternoon to Sunday evening. The stop fires `MON-FRI` and the
+start `SUN-THU`. A time zone without daylight saving, such as UTC, keeps those
+hours the same all year in every location.
+
+Before v0.3.0 this input was `nightly_stop`, with `time`, `days` and
+`start_days`. For a schedule that crossed midnight, `days` then named the days
+the stop fired and `start_days` those the start did; now `days` names the days
+the cluster runs and the start days follow from it. The rename replaces nothing:
+the schedules keep their names in AWS, and `moved` blocks carry them to their
+new addresses in state.
 
 `all_instance_ids` lists the instances Terraform owns individually, also as
 `local.all_instance_ids` for files a consumer generates into this directory.

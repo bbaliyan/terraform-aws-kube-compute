@@ -51,6 +51,23 @@ data "aws_route53_zone" "private" {
   private_zone = true
 }
 
+# This cluster's control plane, if it already exists, running or stopped. Found by its tags rather
+# than from state, so a cluster placed by an older version of this module is found too.
+data "aws_instances" "existing_control_plane" {
+  count = local.chooses_subnet ? 1 : 0
+
+  instance_tags = {
+    ClusterName = var.cluster_name
+    Name        = "kube-compute-${var.cluster_name}"
+  }
+  instance_state_names = ["pending", "running", "stopping", "stopped"]
+}
+
+data "aws_instance" "existing_control_plane" {
+  count       = length(try(data.aws_instances.existing_control_plane[0].ids, [])) > 0 ? 1 : 0
+  instance_id = sort(data.aws_instances.existing_control_plane[0].ids)[0]
+}
+
 # The subnet the node launches into. Also yields the VPC ID for the module-owned security group.
 data "aws_subnet" "selected" {
   id = local.effective_subnet_id
@@ -58,11 +75,12 @@ data "aws_subnet" "selected" {
   lifecycle {
     precondition {
       condition     = length(local.subnet_name_candidates) == 0 || local.named_subnet_id != null
-      error_message = "None of the candidate subnets has a free IP address: ${join(", ", local.subnet_name_candidates)}. Free addresses in one of them, or add another subnet to subnet_names."
+      error_message = "No candidate subnet has the ${var.subnet_min_free_ips} free IP addresses a new cluster launches with: ${join(", ", [for name in local.subnet_name_candidates : "${name} has ${data.aws_subnet.by_name[name].available_ip_address_count}"])}. Free addresses in one of them, or add another subnet to subnet_names."
     }
 
+    # Not when the candidates are what came up empty: the precondition above says why.
     precondition {
-      condition     = local.effective_subnet_id != null
+      condition     = local.effective_subnet_id != null || local.chooses_subnet
       error_message = "No subnet could be resolved. Pass subnet_id, subnet_name or subnet_names, or run in an account that still has a default VPC."
     }
   }
