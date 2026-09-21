@@ -169,7 +169,7 @@ run "a_long_cluster_and_group_name_still_fit_the_iam_name_prefix_cap" {
   command = plan
 
   variables {
-    cluster_name = "cluster-sql-multinode-abcdefghi"
+    cluster_name = "long-multinode-cluster-abcdefgh"
     group_name   = "observability"
   }
 
