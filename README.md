@@ -48,6 +48,19 @@ module "cluster" {
 }
 ```
 
+## Names
+
+`cluster_name` is the cluster's identity: tags, resource names, the agent token parameter, and
+node names such as `cp-example-1` and `platform-example-1`. It has to be unique in the account
+and region, so where one cluster design is deployed more than once, what tells the copies apart
+belongs in the name: `app-red`, `app-blue`.
+
+That distinction then repeats itself in DNS whenever the domain already carries it.
+`cluster_dns_name` takes the repetition out: with `cluster_name = "app-red"` and
+`cluster_domain = "red.example.internal"`, setting `cluster_dns_name = "app"` serves the cluster
+at `app.red.example.internal` while every name in AWS stays `app-red`. Unset, DNS uses
+`cluster_name`.
+
 ## Nodes
 
 | Kind | Input | For |

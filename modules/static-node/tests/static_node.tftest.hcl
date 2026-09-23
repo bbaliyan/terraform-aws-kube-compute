@@ -178,3 +178,20 @@ run "a_long_cluster_and_group_name_still_fit_the_iam_name_prefix_cap" {
     error_message = "an IAM name_prefix over 38 characters is rejected by AWS at apply time, after the rest of the plan has already been created"
   }
 }
+
+run "a_nodes_name_says_which_cluster_it_belongs_to" {
+  command = plan
+
+  variables {
+    cluster_name = "app-red"
+    group_name   = "platform"
+    node_count   = 2
+  }
+
+  assert {
+    condition = toset([for node in aws_instance.node : node.tags["Name"]]) == toset([
+      "platform-app-red-1", "platform-app-red-2",
+    ])
+    error_message = "a node carries its group and its cluster, so two clusters in one account are told apart in the console"
+  }
+}

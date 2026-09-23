@@ -126,3 +126,22 @@ run "os_image_name_resolves_for_each_instance_types_architecture" {
     error_message = "os_image_name should resolve to the looked-up AMI ID for every instance type"
   }
 }
+
+run "a_pools_names_say_which_cluster_it_belongs_to" {
+  command = plan
+
+  variables {
+    cluster_name            = "app-red"
+    group_name              = "workers"
+    instance_type_max_sizes = { "t3a.large" = 3 }
+  }
+
+  assert {
+    condition     = local.node_name == "workers-app-red"
+    error_message = "an instance the group launches carries its group and its cluster: got ${local.node_name}"
+  }
+  assert {
+    condition     = alltrue([for group in aws_autoscaling_group.node : startswith(group.name, "kube-compute-app-red-workers-")])
+    error_message = "an Auto Scaling group's name is unique per account and region, so it has to carry the cluster"
+  }
+}

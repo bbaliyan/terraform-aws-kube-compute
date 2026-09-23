@@ -106,7 +106,7 @@ locals {
 
   # DNS is optional and name-only. cluster_fqdn is the API/kubeconfig name; wildcard covers it + services.
   has_domain    = var.cluster_domain != null
-  fqdn_suffix   = local.has_domain ? "${var.cluster_name}.${var.cluster_domain}" : null
+  fqdn_suffix   = local.has_domain ? "${coalesce(var.cluster_dns_name, var.cluster_name)}.${var.cluster_domain}" : null
   cluster_fqdn  = local.has_domain ? "api.${local.fqdn_suffix}" : null
   wildcard_name = local.has_domain ? "*.${local.fqdn_suffix}" : null
   # coalesce() errors if every argument is null (the common case: no DNS configured at

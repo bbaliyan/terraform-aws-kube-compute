@@ -203,8 +203,18 @@ variable "subnet_name" {
   default     = null
 }
 
+variable "cluster_dns_name" {
+  description = "Name to use in DNS in place of cluster_name, so that the FQDN is <cluster_dns_name>.<cluster_domain>. Null (the default) uses cluster_name. Set this where cluster_name carries something the domain already says: with cluster_name = \"app-red\" and cluster_domain = \"red.example.internal\", cluster_dns_name = \"app\" keeps the name app.red.example.internal while tags, resource names and the agent token parameter stay unique to that cluster."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.cluster_dns_name == null || can(regex("^[a-z][a-z0-9-]{0,30}$", var.cluster_dns_name))
+    error_message = "cluster_dns_name must be lowercase alphanumeric/hyphens, start with a letter, max 31 chars."
+  }
+}
+
 variable "cluster_domain" {
-  description = "Optional DNS suffix for the cluster, e.g. 'example.internal'. When set, the FQDN is <cluster_name>.<cluster_domain> and the wildcard is *.<cluster_name>.<cluster_domain>. Null = node is reachable by IP only."
+  description = "Optional DNS suffix for the cluster, e.g. 'example.internal'. When set, the FQDN is <cluster_name>.<cluster_domain> and the wildcard is *.<cluster_name>.<cluster_domain>, with cluster_dns_name in place of cluster_name where it is set. Null = node is reachable by IP only."
   type        = string
   default     = null
 }
