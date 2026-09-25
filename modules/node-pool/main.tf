@@ -198,6 +198,8 @@ resource "aws_launch_template" "node" {
 
 # cluster-autoscaler owns the desired capacity, so Terraform never sets it.
 resource "aws_autoscaling_group" "node" {
+  depends_on = [var.destroy_after]
+
   for_each = var.instance_type_max_sizes
 
   name                = "${local.resource_name}-${replace(each.key, ".", "-")}"

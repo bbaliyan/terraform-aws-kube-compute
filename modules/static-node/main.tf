@@ -155,6 +155,8 @@ module "node_bootstrap" {
 # No depends_on: RKE2's agent retries its join indefinitely, so a worker booting
 # alongside genesis simply waits.
 resource "aws_instance" "node" {
+  depends_on = [var.destroy_after]
+
   for_each = local.node_keys
 
   ami                    = local.effective_ami_id

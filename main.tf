@@ -74,8 +74,10 @@ locals {
 }
 
 # A destroy never deletes a PVC, so the CSI driver never releases its volume and it is left
-# detached and billed. The node modules depend on this resource to have it destroyed last:
-# Terraform destroys a dependent before its dependency.
+# detached and billed. The nodes depend on this resource, through destroy_after, to have it
+# destroyed last: Terraform destroys a dependent before its dependency. It is passed to the
+# nodes rather than set as depends_on on the modules, which would defer every data source in
+# them to apply and leave the control plane's existing-instance lookup uncountable at plan.
 resource "terraform_data" "volume_sweep" {
   input = {
     enabled      = var.orphan_volume_cleanup
@@ -116,9 +118,9 @@ resource "terraform_data" "volume_sweep" {
 }
 
 module "control_plane" {
-  source     = "./modules/control-plane"
-  depends_on = [terraform_data.volume_sweep]
+  source = "./modules/control-plane"
 
+  destroy_after                     = terraform_data.volume_sweep.id
   cluster_name                      = var.cluster_name
   trusted_ca_pem                    = var.trusted_ca_pem
   trusted_ca_in_image               = var.trusted_ca_in_image
@@ -166,10 +168,10 @@ module "control_plane" {
 
 # See modules/aws-static-node/README.md for why named instances suit fixed roles.
 module "static_nodes" {
-  source     = "./modules/static-node"
-  for_each   = var.static_nodes
-  depends_on = [terraform_data.volume_sweep]
+  source   = "./modules/static-node"
+  for_each = var.static_nodes
 
+  destroy_after             = terraform_data.volume_sweep.id
   cluster_name              = var.cluster_name
   group_name                = each.key
   aws_region                = var.aws_region
@@ -208,10 +210,10 @@ module "static_nodes" {
 }
 
 module "autoscaled_nodes" {
-  source     = "./modules/node-pool"
-  for_each   = var.autoscaled_nodes
-  depends_on = [terraform_data.volume_sweep]
+  source   = "./modules/node-pool"
+  for_each = var.autoscaled_nodes
 
+  destroy_after             = terraform_data.volume_sweep.id
   cluster_name              = var.cluster_name
   group_name                = each.key
   aws_region                = var.aws_region

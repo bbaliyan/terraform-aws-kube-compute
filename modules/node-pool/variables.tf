@@ -135,3 +135,9 @@ variable "graceful_shutdown" {
   })
   default = {}
 }
+
+variable "destroy_after" {
+  description = "Something that must outlive this module's nodes at destroy. It orders their destruction and nothing else, so it is never read as a value."
+  type        = string
+  default     = null
+}

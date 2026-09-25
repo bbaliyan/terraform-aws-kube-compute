@@ -56,3 +56,25 @@ run "turning_it_off_keeps_the_resource" {
     error_message = "the switch must reach the provisioner through input"
   }
 }
+
+# The sweep is created with the cluster, so anything the control plane reads that depends on it
+# is deferred to apply. Choosing a subnet from subnet_names reads the cluster's existing control
+# plane and counts on what it finds, which cannot be counted once deferred.
+run "a_new_cluster_choosing_its_subnet_still_plans" {
+  command = plan
+
+  override_data {
+    target = module.control_plane.data.aws_subnet.by_name
+    values = { id = "subnet-pool123", available_ip_address_count = 250 }
+  }
+
+  variables {
+    subnet_id    = null
+    subnet_names = ["private-az1", "private-az2"]
+  }
+
+  assert {
+    condition     = module.control_plane.subnet_id == "subnet-pool123"
+    error_message = "a fresh cluster must plan when its subnet is chosen from subnet_names"
+  }
+}

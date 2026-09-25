@@ -349,7 +349,7 @@ resource "aws_instance" "control_plane_additional" {
 
   tags = merge(local.common_tags, { Name = "cp-${var.cluster_name}-${tonumber(each.key) + 1}" })
 
-  depends_on = [aws_instance.control_plane]
+  depends_on = [aws_instance.control_plane, var.destroy_after]
 
   lifecycle {
     ignore_changes = [ami]
@@ -541,6 +541,8 @@ resource "aws_iam_instance_profile" "node" {
 # The precondition fails plan explicitly when control_plane_count > 1 but fewer than 3 distinct
 # AZs resolved, rather than silently under-spreading the quorum.
 resource "aws_instance" "control_plane" {
+  depends_on = [var.destroy_after]
+
   ami                    = local.effective_ami_id
   instance_type          = var.instance_type
   subnet_id              = local.genesis_subnet_id
