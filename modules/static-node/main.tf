@@ -149,6 +149,7 @@ module "node_bootstrap" {
   registry_mirror_url       = var.registry_mirror_url
   dns_servers               = var.dns_servers
   aws_provider_id           = var.aws_provider_id
+  graceful_shutdown         = var.graceful_shutdown
 }
 
 # No depends_on: RKE2's agent retries its join indefinitely, so a worker booting

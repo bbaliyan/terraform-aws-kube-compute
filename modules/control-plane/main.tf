@@ -280,6 +280,7 @@ module "node_bootstrap" {
   platform_helm_values_object     = var.platform_helm_values_object
   extra_tags                      = var.extra_tags
   aws_provider_id                 = var.aws_provider_id
+  graceful_shutdown               = var.graceful_shutdown
 
   # The AWS image bakes no Cluster API install manifest.
   cluster_autoscaler_capi_install_baked = false
@@ -313,6 +314,7 @@ module "node_bootstrap_additional" {
   cert_mode            = var.cert_mode
   extra_tags           = var.extra_tags
   aws_provider_id      = var.aws_provider_id
+  graceful_shutdown    = var.graceful_shutdown
   # gitops_* intentionally omitted (defaults to null): Argo/platform bootstrap runs on the
   # first server only — node-bootstrap also enforces this at the task level.
 }

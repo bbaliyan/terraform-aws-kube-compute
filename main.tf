@@ -73,8 +73,51 @@ locals {
   )
 }
 
+# A destroy never deletes a PVC, so the CSI driver never releases its volume and it is left
+# detached and billed. The node modules depend on this resource to have it destroyed last:
+# Terraform destroys a dependent before its dependency.
+resource "terraform_data" "volume_sweep" {
+  input = {
+    enabled      = var.orphan_volume_cleanup
+    cluster_name = var.cluster_name
+    region       = var.aws_region
+  }
+
+  # The switch is in `input`, not `count`: a count of 0 would destroy this resource, running the
+  # sweep against a live cluster. An `input` change is an in-place update.
+  provisioner "local-exec" {
+    when       = destroy
+    on_failure = continue
+    command    = <<-EOT
+      set -u
+      [ "${self.input.enabled}" = "true" ] || exit 0
+      REGION="${self.input.region}"
+      OWNED="Name=tag:ClusterName,Values=${self.input.cluster_name}"
+
+      volumes() {
+        aws ec2 describe-volumes --region "$REGION" --filters "$OWNED" "Name=status,Values=$1" --query "$2" --output text
+      }
+
+      # An autoscaling group terminates its instances after Terraform stops waiting on it.
+      ATTEMPT=0
+      while [ "$ATTEMPT" -lt 30 ]; do
+        BUSY=$(volumes in-use,detaching 'length(Volumes)') || break
+        [ "$BUSY" = "0" ] && break
+        sleep 10
+        ATTEMPT=$((ATTEMPT + 1))
+      done
+
+      for ID in $(volumes available 'Volumes[].VolumeId'); do
+        echo "kube-compute: deleting orphaned volume $ID"
+        aws ec2 delete-volume --region "$REGION" --volume-id "$ID" || echo "kube-compute: $ID could not be deleted and is still billed -- delete it by hand" >&2
+      done
+    EOT
+  }
+}
+
 module "control_plane" {
-  source = "./modules/control-plane"
+  source     = "./modules/control-plane"
+  depends_on = [terraform_data.volume_sweep]
 
   cluster_name                      = var.cluster_name
   trusted_ca_pem                    = var.trusted_ca_pem
@@ -118,12 +161,14 @@ module "control_plane" {
   root_volume_size_gb               = var.root_volume_size_gb
   root_volume_type                  = var.root_volume_type
   aws_provider_id                   = local.autoscaling_enabled
+  graceful_shutdown                 = var.graceful_shutdown
 }
 
 # See modules/aws-static-node/README.md for why named instances suit fixed roles.
 module "static_nodes" {
-  source   = "./modules/static-node"
-  for_each = var.static_nodes
+  source     = "./modules/static-node"
+  for_each   = var.static_nodes
+  depends_on = [terraform_data.volume_sweep]
 
   cluster_name              = var.cluster_name
   group_name                = each.key
@@ -132,6 +177,7 @@ module "static_nodes" {
   agent_token_ssm_parameter = module.control_plane.agent_token_ssm_parameter
   cluster_fqdn_suffix       = var.cluster_domain != null ? "${coalesce(var.cluster_dns_name, var.cluster_name)}.${var.cluster_domain}" : null
   aws_provider_id           = local.autoscaling_enabled
+  graceful_shutdown         = var.graceful_shutdown
 
   # Ingress runs with the platform, so only the platform group answers on the external ports.
   security_group_ids = concat(
@@ -162,8 +208,9 @@ module "static_nodes" {
 }
 
 module "autoscaled_nodes" {
-  source   = "./modules/node-pool"
-  for_each = var.autoscaled_nodes
+  source     = "./modules/node-pool"
+  for_each   = var.autoscaled_nodes
+  depends_on = [terraform_data.volume_sweep]
 
   cluster_name              = var.cluster_name
   group_name                = each.key
@@ -188,6 +235,7 @@ module "autoscaled_nodes" {
   trusted_ca_in_image = var.trusted_ca_in_image
   registry_mirror_url = var.registry_mirror_url
   dns_servers         = var.dns_servers
+  graceful_shutdown   = var.graceful_shutdown
   extra_tags          = var.extra_tags
 }
 

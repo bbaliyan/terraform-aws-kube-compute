@@ -46,11 +46,11 @@ run "server_init_payload_is_valid_cloud_config" {
     error_message = "prefer_fqdn_over_hostname must be false — RHEL-family cloud-init otherwise silently applies fqdn as the real system hostname even though a distinct short hostname is also set, which then makes NetworkManager derive a DNS search-domain entry matching the cluster's own wildcard DNS zone"
   }
   assert {
-    condition     = yamldecode(output.cloud_init_user_data).runcmd[2] == ["/opt/kube-compute/bootstrap.sh"]
+    condition     = reverse(yamldecode(output.cloud_init_user_data).runcmd)[0] == ["/opt/kube-compute/bootstrap.sh"]
     error_message = "the payload must invoke the baked bootstrap program from runcmd"
   }
   assert {
-    condition     = strcontains(yamldecode(output.cloud_init_user_data).runcmd[1][2], "bakes no /opt/kube-compute/bootstrap.sh")
+    condition     = strcontains(reverse(yamldecode(output.cloud_init_user_data).runcmd)[1][2], "bakes no /opt/kube-compute/bootstrap.sh")
     error_message = "runcmd must first check the program is actually baked into this image — without it an image predating the bake fails with cloud-init's own bare 'No such file or directory' against a path this module used to write itself"
   }
   assert {
@@ -244,7 +244,7 @@ run "aws_provider_id_is_set_before_rke2_starts" {
   assert {
     condition = (
       strcontains(yamldecode(output.cloud_init_user_data).runcmd[0][2], "provider-id=aws:///%s/%s") &&
-      yamldecode(output.cloud_init_user_data).runcmd[3] == ["/opt/kube-compute/bootstrap.sh"]
+      reverse(yamldecode(output.cloud_init_user_data).runcmd)[0] == ["/opt/kube-compute/bootstrap.sh"]
     )
     error_message = "the providerID drop-in must be written before the bootstrap program starts RKE2, or the node registers without one and cluster-autoscaler cannot match it to its instance"
   }
@@ -265,7 +265,7 @@ run "no_aws_provider_id_by_default" {
   }
 
   assert {
-    condition     = length(yamldecode(output.cloud_init_user_data).runcmd) == 3
+    condition     = !anytrue([for c in yamldecode(output.cloud_init_user_data).runcmd : strcontains(join(" ", c), "169.254.169.254")])
     error_message = "without aws_provider_id no instance metadata may be read, since outside AWS there is none"
   }
 }

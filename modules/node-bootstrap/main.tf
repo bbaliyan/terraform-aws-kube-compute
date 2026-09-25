@@ -303,6 +303,35 @@ locals {
     "  - \"resolv-conf=${local.kubelet_resolv_conf_path}\"",
   ])
 
+  graceful_shutdown_enabled = var.graceful_shutdown != null
+
+  # A kubelet drop-in, because shutdownGracePeriod has no command-line flag and so cannot go
+  # through RKE2's kubelet-arg like the settings above. config-dir merges this over the config
+  # RKE2 generates, which stays untouched.
+  graceful_shutdown_config_dir = "/etc/rancher/rke2/kubelet.conf.d"
+
+  graceful_shutdown_kubelet_config = !local.graceful_shutdown_enabled ? "" : join("\n", [
+    "apiVersion: kubelet.config.k8s.io/v1beta1",
+    "kind: KubeletConfiguration",
+    "shutdownGracePeriod: ${var.graceful_shutdown.seconds}s",
+    "shutdownGracePeriodCriticalPods: ${var.graceful_shutdown.critical_seconds}s",
+    "",
+  ])
+
+  graceful_shutdown_arg_block = !local.graceful_shutdown_enabled ? "" : join("\n", [
+    "kubelet-arg+:",
+    "  - \"config-dir=${local.graceful_shutdown_config_dir}\"",
+    "",
+  ])
+
+  # kubelet asks logind to delay the shutdown and gets no longer than InhibitDelayMaxSec, which
+  # defaults to 5 seconds. Left alone it silently caps the grace period above to that.
+  graceful_shutdown_logind_config = !local.graceful_shutdown_enabled ? "" : join("\n", [
+    "[Login]",
+    "InhibitDelayMaxSec=${var.graceful_shutdown.seconds + 5}",
+    "",
+  ])
+
   # The one number both halves of the boot agree on. The bootstrap program is
   # baked into the node image; this says which node.env contract it was written
   # against, and the program refuses to run against any other. Bump both
@@ -460,6 +489,29 @@ locals {
       encoding    = "b64"
       content     = base64encode(local.kubelet_resolv_conf_content)
     }],
+    !local.graceful_shutdown_enabled ? [] : [
+      {
+        path        = "${local.graceful_shutdown_config_dir}/10-graceful-shutdown.conf"
+        permissions = "0644"
+        owner       = "root:root"
+        encoding    = "b64"
+        content     = base64encode(local.graceful_shutdown_kubelet_config)
+      },
+      {
+        path        = "/etc/rancher/rke2/config.yaml.d/30-graceful-shutdown.yaml"
+        permissions = "0644"
+        owner       = "root:root"
+        encoding    = "b64"
+        content     = base64encode(local.graceful_shutdown_arg_block)
+      },
+      {
+        path        = "/etc/systemd/logind.conf.d/99-kube-compute-inhibit.conf"
+        permissions = "0644"
+        owner       = "root:root"
+        encoding    = "b64"
+        content     = base64encode(local.graceful_shutdown_logind_config)
+      },
+    ],
     !(local.render_argocd && local.platform_app_enabled) ? [] : [{
       path        = "/opt/kube-compute/manifests/10-platform-app.yaml"
       permissions = "0600"
@@ -555,8 +607,9 @@ locals {
       write_files               = local.write_files
       runcmd = concat(
         var.aws_provider_id ? [["/bin/sh", "-c", local.aws_instance_script]] : [],
+        [["/bin/sh", "-c", local.kubelet_reserved_script]],
+        local.graceful_shutdown_enabled ? [["systemctl", "restart", "systemd-logind"]] : [],
         [
-          ["/bin/sh", "-c", local.kubelet_reserved_script],
           # The program is baked into the image, not written above. An image
           # predating it would otherwise fail with cloud-init's own bare "No such
           # file or directory" against a path this module used to write itself.

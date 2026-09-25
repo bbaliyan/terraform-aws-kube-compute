@@ -149,3 +149,12 @@ variable "extra_tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "graceful_shutdown" {
+  description = "How long kubelet holds up an OS shutdown to evict pods. See node-bootstrap's own variable; null disables it."
+  type = object({
+    seconds          = optional(number, 90)
+    critical_seconds = optional(number, 30)
+  })
+  default = {}
+}

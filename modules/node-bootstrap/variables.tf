@@ -336,3 +336,22 @@ variable "aws_provider_id" {
   type        = bool
   default     = false
 }
+
+variable "graceful_shutdown" {
+  description = "How long kubelet holds up an OS shutdown to evict pods, so a node that is stopped on a schedule -- or terminated by an autoscaler -- stops its workloads instead of having them killed with it. critical_seconds is the part of that reserved for critical pods, and must leave room for an ordinary pod's terminationGracePeriodSeconds. Null disables the feature, leaving pods to be killed when containerd goes down. Keep the total well under the two minutes a cloud gives an instance before it pulls the power."
+  type = object({
+    seconds          = optional(number, 90)
+    critical_seconds = optional(number, 30)
+  })
+  default = {}
+
+  validation {
+    condition     = var.graceful_shutdown == null ? true : var.graceful_shutdown.seconds > var.graceful_shutdown.critical_seconds
+    error_message = "graceful_shutdown.seconds must exceed critical_seconds: critical pods are evicted inside the same window, not after it."
+  }
+
+  validation {
+    condition     = var.graceful_shutdown == null ? true : var.graceful_shutdown.critical_seconds > 0
+    error_message = "graceful_shutdown.critical_seconds must be greater than zero."
+  }
+}

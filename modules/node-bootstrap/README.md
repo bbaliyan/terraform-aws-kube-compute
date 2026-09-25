@@ -184,6 +184,24 @@ The control plane runs as static pods, so server nodes give them requests throug
 kube-controller-manager 256Mi, kube-scheduler 128Mi) and the scheduler counts their
 memory instead of the reservation having to cover it.
 
+## Graceful shutdown
+
+`graceful_shutdown` gives kubelet a window to evict pods when the OS is shutting
+down, so a node that is stopped or terminated stops its workloads instead of having
+them killed with it. Three files carry it, all written before RKE2 starts:
+
+| File | Why |
+|---|---|
+| `/etc/rancher/rke2/kubelet.conf.d/10-graceful-shutdown.conf` | `shutdownGracePeriod` and `shutdownGracePeriodCriticalPods` |
+| `/etc/rancher/rke2/config.yaml.d/30-graceful-shutdown.yaml` | `kubelet-arg` cannot set either — they have no command-line flag — so kubelet is given `config-dir` and reads the drop-in above |
+| `/etc/systemd/logind.conf.d/99-kube-compute-inhibit.conf` | `InhibitDelayMaxSec`, five seconds by default, is the longest logind lets kubelet hold the shutdown. Left alone it silently caps the grace period to five seconds |
+
+`runcmd` restarts `systemd-logind` so the last of those applies to the node's first
+shutdown, not just later ones. The total must stay under whatever the platform allows
+an instance before it cuts the power — about two minutes on AWS — and must leave room
+for the longest `terminationGracePeriodSeconds` among the pods that land here. Null
+disables all of it.
+
 ## Interface notes
 
 - `ansible_playbook_path`, `invocation_mode`, `ansible_connection_vars`,

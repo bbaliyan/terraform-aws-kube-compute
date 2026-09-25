@@ -153,6 +153,7 @@ module "node_bootstrap" {
   registry_mirror_url       = var.registry_mirror_url
   dns_servers               = var.dns_servers
   aws_provider_id           = true
+  graceful_shutdown         = var.graceful_shutdown
 }
 
 resource "aws_launch_template" "node" {
