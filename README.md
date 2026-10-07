@@ -209,8 +209,9 @@ the warning itself needs a node termination handler running in the cluster.
 
 ## OS updates
 
-`os_auto_updates` has every node install OS updates daily with `dnf-automatic`. It
-never reboots: kube-platform's Node OS Updates dashboard shows the nodes whose updates
+`os_auto_updates` has every node install OS updates with `dnf-automatic` daily at
+06:00 and 15 minutes after every boot, so nodes stopped overnight by `power_schedule`
+update when they start. It never reboots: kube-platform's Node OS Updates dashboard shows the nodes whose updates
 need one, and rebooting them is left to whoever runs the cluster. RKE2's own packages
 are excluded from dnf, so system-upgrade-controller stays the only thing that changes
 the Kubernetes version.

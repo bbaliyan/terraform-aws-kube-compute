@@ -206,7 +206,8 @@ disables all of it.
 
 `os_auto_updates` installs `dnf-automatic` and `yum-utils` once the node has joined,
 and enables `dnf-automatic-install.timer`, which installs updates daily and never
-reboots. `rke2-server`, `rke2-agent` and `rke2-common` are excluded in `dnf.conf`, so
+reboots. The timer runs at 06:00 and also 15 minutes after every boot, so a node that
+is powered off at 06:00, such as one on a power schedule, still updates. `rke2-server`, `rke2-agent` and `rke2-common` are excluded in `dnf.conf`, so
 RKE2 only moves through system-upgrade-controller; `rke2-selinux` still updates.
 `needs-restarting -r` from `yum-utils` is what kube-platform's os-updates collector
 reads to report that a node needs a reboot. False leaves the node's packages as baked.

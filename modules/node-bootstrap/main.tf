@@ -588,6 +588,9 @@ locals {
     set -eu
     dnf install -y dnf-automatic yum-utils
     dnf config-manager --save --setopt=excludepkgs=rke2-server,rke2-agent,rke2-common
+    install -d -m 0755 /etc/systemd/system/dnf-automatic-install.timer.d
+    printf '[Timer]\nOnBootSec=15min\n' >/etc/systemd/system/dnf-automatic-install.timer.d/10-on-boot.conf
+    systemctl daemon-reload
     systemctl enable --now dnf-automatic-install.timer
   EOT
 

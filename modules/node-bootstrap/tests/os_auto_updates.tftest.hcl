@@ -32,6 +32,11 @@ run "updates_never_reboot_and_never_touch_rke2" {
   }
 
   assert {
+    condition     = strcontains(local.os_auto_updates_script, "OnBootSec=15min")
+    error_message = "a node powered off at the timer's 06:00 must still update after it starts"
+  }
+
+  assert {
     condition     = strcontains(local.os_auto_updates_script, "excludepkgs=rke2-server,rke2-agent,rke2-common")
     error_message = "RKE2's packages must be excluded, or dnf upgrades RKE2 outside system-upgrade-controller"
   }
