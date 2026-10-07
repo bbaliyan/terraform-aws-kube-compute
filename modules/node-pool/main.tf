@@ -154,6 +154,7 @@ module "node_bootstrap" {
   dns_servers               = var.dns_servers
   aws_provider_id           = true
   graceful_shutdown         = var.graceful_shutdown
+  os_auto_updates           = var.os_auto_updates
 }
 
 resource "aws_launch_template" "node" {

@@ -584,6 +584,13 @@ locals {
     printf 'kubelet-arg+:\n  - "kube-reserved=cpu=%sm,memory=%sMi"\n  - "system-reserved=cpu=100m,memory=256Mi"\n  - "eviction-hard=memory.available<100Mi,nodefs.available<10%%,imagefs.available<15%%,nodefs.inodesFree<5%%,imagefs.inodesFree<5%%"\n' "$KUBE_CPU_M" "$KUBE_MEM_MIB" >/etc/rancher/rke2/config.yaml.d/40-kubelet-reserved.yaml
   EOT
 
+  os_auto_updates_script = <<-EOT
+    set -eu
+    dnf install -y dnf-automatic yum-utils
+    dnf config-manager --save --setopt=excludepkgs=rke2-server,rke2-agent,rke2-common
+    systemctl enable --now dnf-automatic-install.timer
+  EOT
+
   # RKE2/kubelet default the registered Kubernetes node name to the OS
   # hostname, so every node in a cluster MUST get a distinct value here.
   # var.set_hostname = false omits both keys entirely (see that variable's
@@ -616,6 +623,7 @@ locals {
           ["/bin/sh", "-c", "test -x /opt/kube-compute/bootstrap.sh || { echo 'kube-compute: this image bakes no /opt/kube-compute/bootstrap.sh, which node.env contract ${local.node_env_contract} requires -- rebuild the node image from a ref that bakes it' >&2; exit 1; }"],
           ["/opt/kube-compute/bootstrap.sh"],
         ],
+        var.os_auto_updates ? [["/bin/sh", "-c", local.os_auto_updates_script]] : [],
       )
     },
     var.set_hostname ? { hostname = var.node_name } : {},

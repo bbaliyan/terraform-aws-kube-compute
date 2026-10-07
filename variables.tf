@@ -420,3 +420,9 @@ variable "graceful_shutdown" {
   })
   default = {}
 }
+
+variable "os_auto_updates" {
+  description = "Installs OS updates daily with dnf-automatic on every node, without rebooting; a node whose updates need a reboot reports it through needs-restarting (yum-utils). RKE2's own packages are excluded from dnf, since system-upgrade-controller upgrades them. False leaves nodes' packages as baked."
+  type        = bool
+  default     = true
+}

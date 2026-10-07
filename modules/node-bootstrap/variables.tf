@@ -355,3 +355,9 @@ variable "graceful_shutdown" {
     error_message = "graceful_shutdown.critical_seconds must be greater than zero."
   }
 }
+
+variable "os_auto_updates" {
+  description = "Installs OS updates daily with dnf-automatic, without rebooting, once the node has joined. RKE2's own packages are excluded from dnf, since system-upgrade-controller upgrades them. Also installs yum-utils, whose needs-restarting reports when a reboot is due. False leaves the node's packages as baked."
+  type        = bool
+  default     = true
+}

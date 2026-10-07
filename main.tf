@@ -164,6 +164,7 @@ module "control_plane" {
   root_volume_type                  = var.root_volume_type
   aws_provider_id                   = local.autoscaling_enabled
   graceful_shutdown                 = var.graceful_shutdown
+  os_auto_updates                   = var.os_auto_updates
 }
 
 # See modules/aws-static-node/README.md for why named instances suit fixed roles.
@@ -180,6 +181,7 @@ module "static_nodes" {
   cluster_fqdn_suffix       = var.cluster_domain != null ? "${coalesce(var.cluster_dns_name, var.cluster_name)}.${var.cluster_domain}" : null
   aws_provider_id           = local.autoscaling_enabled
   graceful_shutdown         = var.graceful_shutdown
+  os_auto_updates           = var.os_auto_updates
 
   # Ingress runs with the platform, so only the platform group answers on the external ports.
   security_group_ids = concat(
@@ -238,6 +240,7 @@ module "autoscaled_nodes" {
   registry_mirror_url = var.registry_mirror_url
   dns_servers         = var.dns_servers
   graceful_shutdown   = var.graceful_shutdown
+  os_auto_updates     = var.os_auto_updates
   extra_tags          = var.extra_tags
 }
 

@@ -159,6 +159,12 @@ variable "graceful_shutdown" {
   default = {}
 }
 
+variable "os_auto_updates" {
+  description = "Installs OS updates daily with dnf-automatic, without rebooting. See node-bootstrap's own variable."
+  type        = bool
+  default     = true
+}
+
 variable "destroy_after" {
   description = "Something that must outlive this module's nodes at destroy. It orders their destruction and nothing else, so it is never read as a value."
   type        = string

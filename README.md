@@ -207,6 +207,18 @@ A spot interruption is only partly covered. The OS shutdown arrives at the end o
 the two-minute warning rather than at its start, so this is a backstop; draining on
 the warning itself needs a node termination handler running in the cluster.
 
+## OS updates
+
+`os_auto_updates` has every node install OS updates daily with `dnf-automatic`. It
+never reboots: kube-platform's Node OS Updates dashboard shows the nodes whose updates
+need one, and rebooting them is left to whoever runs the cluster. RKE2's own packages
+are excluded from dnf, so system-upgrade-controller stays the only thing that changes
+the Kubernetes version.
+
+It is on by default and changes every node's user data, so an existing cluster that
+upgrades to it replaces its control plane and static nodes. Set
+`os_auto_updates = false` to leave them as they are.
+
 ## Volumes on destroy
 
 `orphan_volume_cleanup` deletes the cluster's dynamically provisioned EBS volumes
