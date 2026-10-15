@@ -124,6 +124,15 @@ run "server_init_payload_is_valid_cloud_config" {
   assert {
     condition = anytrue([
       for f in yamldecode(output.cloud_init_user_data).write_files :
+      strcontains(base64decode(f.content), "kube-scheduler-arg:\n  - \"bind-address=0.0.0.0\"") &&
+      strcontains(base64decode(f.content), "kube-controller-manager-arg:\n  - \"bind-address=0.0.0.0\"")
+      if f.path == "/opt/kube-compute/rke2-config-static.yaml"
+    ])
+    error_message = "the scheduler and controller manager must listen beyond loopback, or kube-platform's Prometheus can't scrape them and their down alerts fire on every cluster"
+  }
+  assert {
+    condition = anytrue([
+      for f in yamldecode(output.cloud_init_user_data).write_files :
       strcontains(base64decode(f.content), "CNI='cilium'") &&
       strcontains(base64decode(f.content), "NODE_ROLE='server-init'")
       if f.path == "/opt/kube-compute/node.env"
@@ -227,6 +236,14 @@ run "worker_payload_skips_genesis_only_content" {
       if f.path == "/opt/kube-compute/rke2-config-static.yaml"
     ])
     error_message = "a worker's config.yaml fragment must carry its node labels"
+  }
+  assert {
+    condition = alltrue([
+      for f in yamldecode(output.cloud_init_user_data).write_files :
+      !strcontains(base64decode(f.content), "kube-scheduler-arg")
+      if f.path == "/opt/kube-compute/rke2-config-static.yaml"
+    ])
+    error_message = "control-plane arguments belong to servers only; a worker runs no scheduler"
   }
 }
 

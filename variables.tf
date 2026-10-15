@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 variable "cluster_name" {
-  description = "Cluster identity. Used in tags, the FQDN, and the kubeconfig SAN. Lowercase, starts with a letter."
+  description = "Cluster identity. Used in tags, the FQDN, and the kubeconfig SAN. Lowercase, starts with a letter or digit."
   type        = string
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{0,30}$", var.cluster_name))
-    error_message = "cluster_name must be lowercase alphanumeric/hyphens, start with a letter, max 31 chars."
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,30}$", var.cluster_name))
+    error_message = "cluster_name must be lowercase alphanumeric/hyphens, start with a letter or digit, max 31 chars."
   }
 }
 
@@ -208,8 +208,8 @@ variable "cluster_dns_name" {
   type        = string
   default     = null
   validation {
-    condition     = var.cluster_dns_name == null || can(regex("^[a-z][a-z0-9-]{0,30}$", var.cluster_dns_name))
-    error_message = "cluster_dns_name must be lowercase alphanumeric/hyphens, start with a letter, max 31 chars."
+    condition     = var.cluster_dns_name == null || can(regex("^[a-z0-9][a-z0-9-]{0,30}$", var.cluster_dns_name))
+    error_message = "cluster_dns_name must be lowercase alphanumeric/hyphens, start with a letter or digit, max 31 chars."
   }
 }
 
@@ -296,8 +296,14 @@ variable "static_nodes" {
     registry_mirror_url   = optional(string)
     dns_servers           = optional(list(string))
     extra_tags            = optional(map(string), {})
+    node_name_template    = optional(string)
   }))
   default = {}
+
+  validation {
+    condition     = length(compact([for group in values(var.static_nodes) : group.node_name_template])) == length(distinct(compact([for group in values(var.static_nodes) : group.node_name_template])))
+    error_message = "Two static_nodes groups have the same node_name_template, so their nodes would share names."
+  }
 }
 
 variable "platform_node_group" {
@@ -425,4 +431,16 @@ variable "os_auto_updates" {
   description = "Installs OS updates daily with dnf-automatic on every node, without rebooting; a node whose updates need a reboot reports it through needs-restarting (yum-utils). RKE2's own packages are excluded from dnf, since system-upgrade-controller upgrades them. False leaves nodes' packages as baked."
   type        = bool
   default     = true
+}
+
+variable "control_plane_node_name_template" {
+  description = "Name for each control-plane node: its hostname, Kubernetes node name and Name tag. {zone} becomes the last letter of the node's availability zone, and {number} the node's number as two digits (01, 02, ...). Null keeps cp-<cluster_name>-<n>. Each static_nodes group has its own node_name_template; autoscaled nodes keep the names AWS gives them."
+  type        = string
+  default     = null
+}
+
+variable "boot_scripts" {
+  description = "Bash scripts run on every control-plane and static node at its first boot, in order, before RKE2 is installed, for example to join a directory. Each sees CLUSTER_NAME, NODE_ROLE (control-plane or worker) and NODE_NAME in its environment. Autoscaled nodes do not run them. Empty (the default) runs none."
+  type        = list(string)
+  default     = []
 }

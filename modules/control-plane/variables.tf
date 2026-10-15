@@ -2,11 +2,11 @@
 
 # ---- Common inputs (pass through to node-bootstrap) ----
 variable "cluster_name" {
-  description = "Cluster identity. Used in tags, the FQDN, and the kubeconfig SAN. Lowercase, starts with a letter."
+  description = "Cluster identity. Used in tags, the FQDN, and the kubeconfig SAN. Lowercase, starts with a letter or digit."
   type        = string
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{0,30}$", var.cluster_name))
-    error_message = "cluster_name must be lowercase alphanumeric/hyphens, start with a letter, max 31 chars."
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,30}$", var.cluster_name))
+    error_message = "cluster_name must be lowercase alphanumeric/hyphens, start with a letter or digit, max 31 chars."
   }
 }
 
@@ -207,8 +207,8 @@ variable "cluster_dns_name" {
   type        = string
   default     = null
   validation {
-    condition     = var.cluster_dns_name == null || can(regex("^[a-z][a-z0-9-]{0,30}$", var.cluster_dns_name))
-    error_message = "cluster_dns_name must be lowercase alphanumeric/hyphens, start with a letter, max 31 chars."
+    condition     = var.cluster_dns_name == null || can(regex("^[a-z0-9][a-z0-9-]{0,30}$", var.cluster_dns_name))
+    error_message = "cluster_dns_name must be lowercase alphanumeric/hyphens, start with a letter or digit, max 31 chars."
   }
 }
 
@@ -353,4 +353,26 @@ variable "destroy_after" {
   description = "Something that must outlive this module's nodes at destroy. It orders their destruction and nothing else, so it is never read as a value."
   type        = string
   default     = null
+}
+
+variable "node_name_template" {
+  description = "Name for each control-plane node: its hostname, Kubernetes node name and Name tag. {zone} becomes the last letter of the node's availability zone, and {number} the node's number as two digits (01, 02, ...). Null keeps cp-<cluster_name>-<n>."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.node_name_template == null || (can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", replace(replace(coalesce(var.node_name_template, "-"), "{zone}", "a"), "{number}", "00"))) && strcontains(coalesce(var.node_name_template, "-"), "{number}"))
+    error_message = "node_name_template must give a valid hostname: lowercase letters, digits and hyphens, not starting or ending with a hyphen, at most 63 characters, with {zone} and {number} as the only placeholders. It must contain {number}, so every node gets its own name."
+  }
+}
+
+variable "boot_scripts" {
+  description = "Bash scripts run on each control-plane node at its first boot, in order, before RKE2 is installed. Each sees CLUSTER_NAME, NODE_ROLE (control-plane) and NODE_NAME in its environment. A script that fails is logged by cloud-init and does not stop the node. Empty (the default) runs none."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for script in var.boot_scripts : !can(regex("(?m)^KUBE_COMPUTE_BOOT_SCRIPT$", script))])
+    error_message = "A boot script must not have a line that is just KUBE_COMPUTE_BOOT_SCRIPT."
+  }
 }

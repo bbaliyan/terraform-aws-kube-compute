@@ -175,3 +175,29 @@ run "launch_ip_count_covers_static_nodes_in_the_subnet" {
     error_message = "launch_ip_count must be the control plane plus the 3 static nodes sharing its subnet, got ${local.launch_ip_count}"
   }
 }
+
+run "two_groups_with_one_template_are_refused" {
+  command = plan
+
+  variables {
+    static_nodes = {
+      platform  = { node_name_template = "demo-{zone}-wk{number}" }
+      dedicated = { node_name_template = "demo-{zone}-wk{number}" }
+    }
+  }
+
+  expect_failures = [var.static_nodes]
+}
+
+run "a_group_with_the_control_plane_template_is_refused" {
+  command = plan
+
+  variables {
+    control_plane_node_name_template = "demo-{zone}-n{number}"
+    static_nodes = {
+      platform = { node_name_template = "demo-{zone}-n{number}" }
+    }
+  }
+
+  expect_failures = [output.all_instance_ids]
+}

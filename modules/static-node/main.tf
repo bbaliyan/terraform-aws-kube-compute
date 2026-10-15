@@ -19,8 +19,30 @@ locals {
   availability_zone = data.aws_subnet.selected.availability_zone
 
   # Keys start at 1, matching aws-control-plane's own cp-1/cp-2 naming.
-  node_keys  = { for i in range(var.node_count) : tostring(i + 1) => i + 1 }
-  node_names = { for k, _ in local.node_keys : k => "${var.group_name}-${var.cluster_name}-${k}" }
+  node_keys = { for i in range(var.node_count) : tostring(i + 1) => i + 1 }
+  node_names = {
+    for k, n in local.node_keys : k => (
+      var.node_name_template == null
+      ? "${var.group_name}-${var.cluster_name}-${k}"
+      : replace(replace(var.node_name_template, "{zone}", substr(local.availability_zone, length(local.availability_zone) - 1, 1)), "{number}", format("%02d", n))
+    )
+  }
+  boot_script_parts = {
+    for k, name in local.node_names : k => [
+      for script in var.boot_scripts : join("\n", [
+        "--${local.mime_boundary}",
+        "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
+        "",
+        "#!/bin/bash",
+        "export CLUSTER_NAME='${var.cluster_name}' NODE_ROLE='worker' NODE_NAME='${name}'",
+        "script=\"$(mktemp)\"",
+        "cat > \"$script\" <<'KUBE_COMPUTE_BOOT_SCRIPT'",
+        script,
+        "KUBE_COMPUTE_BOOT_SCRIPT",
+        "bash \"$script\" </dev/null",
+      ])
+    ]
+  }
 
   # AlmaLinux community AMIs "likely" ship SSM Agent but not guaranteed running.
   connectivity_user_data = <<-EOT
@@ -34,7 +56,7 @@ locals {
   mime_boundary = "MIMEBOUNDARY"
 
   combined_user_data = {
-    for k, m in module.node_bootstrap : k => join("\n", [
+    for k, m in module.node_bootstrap : k => join("\n", concat([
       "Content-Type: multipart/mixed; boundary=\"${local.mime_boundary}\"",
       "MIME-Version: 1.0",
       "",
@@ -42,13 +64,14 @@ locals {
       "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
       "",
       local.connectivity_user_data,
+      ], local.boot_script_parts[k], [
       "--${local.mime_boundary}",
       "Content-Type: text/cloud-config; charset=\"us-ascii\"",
       "",
       m.cloud_init_user_data,
       "--${local.mime_boundary}--",
       "",
-    ])
+    ]))
   }
 
   # Run on the node at join time, so the token is never in user_data.

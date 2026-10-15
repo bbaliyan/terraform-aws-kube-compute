@@ -105,6 +105,11 @@ output "static_nodes" {
 output "all_instance_ids" {
   description = "Every EC2 instance Terraform owns individually: the control-plane node(s) plus every static node. Excludes autoscaled nodes, which can be removed but not stopped."
   value       = local.all_instance_ids
+
+  precondition {
+    condition     = var.control_plane_node_name_template == null || !contains([for group in values(var.static_nodes) : group.node_name_template], var.control_plane_node_name_template)
+    error_message = "A static_nodes group has the same node_name_template as control_plane_node_name_template, so their nodes would share names."
+  }
 }
 
 output "platform_node_iam_role_name" {

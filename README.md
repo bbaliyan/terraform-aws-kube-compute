@@ -61,6 +61,46 @@ That distinction then repeats itself in DNS whenever the domain already carries 
 at `app.red.example.internal` while every name in AWS stays `app-red`. Unset, DNS uses
 `cluster_name`.
 
+A cluster name may start with a letter or a digit: `app-red` and `7c-demo` both work.
+
+### Your own node names
+
+Where nodes must follow a naming rule of their own, for example to join a Windows domain, whose
+computer names are at most 15 characters, pass a template. `control_plane_node_name_template`
+names the control-plane nodes, and each `static_nodes` group takes its own `node_name_template`.
+In a template, `{zone}` becomes the last letter of the node's availability zone and `{number}` the
+node's number as two digits:
+
+```hcl
+control_plane_node_name_template = "demo-{zone}-cp{number}"
+
+static_nodes = {
+  platform = { node_count = 2, node_name_template = "demo-{zone}-wk{number}" }
+}
+```
+
+That gives `demo-a-cp01`, `demo-a-wk01` and `demo-a-wk02` in zone a. The name is the node's
+hostname, its Kubernetes node name and its Name tag. A template must contain `{number}`, and no
+two templates may be the same, so nodes never share a name. A name may be up to 63 characters;
+keeping it within a stricter limit, such as Windows' 15, is up to you. `{zone}` comes from the
+availability zone's name, so `control_plane_subnets` must be keyed by zone names such as
+`eu-west-1a`, not zone IDs. Autoscaled nodes keep the names AWS gives them.
+
+Changing a template renames the nodes, which replaces them.
+
+### Boot scripts
+
+`boot_scripts` is a list of bash scripts that every control-plane and static node runs once, at
+its first boot, before RKE2 is installed. Each script sees `CLUSTER_NAME`, `NODE_ROLE`
+(`control-plane` or `worker`) and `NODE_NAME` in its environment, which is enough to, for
+example, join the node to a directory under its own name. Autoscaled nodes do not run them.
+
+Each script is saved to a file and run with no input, so a command that reads from standard
+input cannot swallow the rest of it. The scripts become part of every node's user data, so
+changing them replaces the nodes. A script that fails is logged by cloud-init (`/var/log/cloud-init-output.log`) and does not stop the node
+from joining the cluster. EC2 user data is limited to 16 KB, so keep the scripts short, or have
+them fetch the real work from somewhere the node can read.
+
 ## Nodes
 
 | Kind | Input | For |

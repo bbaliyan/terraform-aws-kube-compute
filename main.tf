@@ -165,6 +165,8 @@ module "control_plane" {
   aws_provider_id                   = local.autoscaling_enabled
   graceful_shutdown                 = var.graceful_shutdown
   os_auto_updates                   = var.os_auto_updates
+  node_name_template                = var.control_plane_node_name_template
+  boot_scripts                      = var.boot_scripts
 }
 
 # See modules/aws-static-node/README.md for why named instances suit fixed roles.
@@ -182,6 +184,8 @@ module "static_nodes" {
   aws_provider_id           = local.autoscaling_enabled
   graceful_shutdown         = var.graceful_shutdown
   os_auto_updates           = var.os_auto_updates
+  node_name_template        = each.value.node_name_template
+  boot_scripts              = var.boot_scripts
 
   # Ingress runs with the platform, so only the platform group answers on the external ports.
   security_group_ids = concat(

@@ -35,7 +35,7 @@ locals {
   )
 
   combined_user_data = {
-    for k, payload in local.cloud_init_payloads : k => join("\n", [
+    for k, payload in local.cloud_init_payloads : k => join("\n", concat([
       "Content-Type: multipart/mixed; boundary=\"${local.mime_boundary}\"",
       "MIME-Version: 1.0",
       "",
@@ -43,13 +43,14 @@ locals {
       "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
       "",
       local.connectivity_user_data,
+      ], local.boot_script_parts[k], [
       "--${local.mime_boundary}",
       "Content-Type: text/cloud-config; charset=\"us-ascii\"",
       "",
       payload,
       "--${local.mime_boundary}--",
       "",
-    ])
+    ]))
   }
 
   # EC2 rejects RunInstances when decoded user data exceeds 16384 bytes. Static
@@ -166,8 +167,8 @@ locals {
   # aws_instance.control_plane below.
   dns_registration_name = local.has_domain ? "cp.${local.fqdn_suffix}" : null
 
-  # All control-plane instances, keyed by the same "cp-N" suffix used in control_plane_node_refs,
-  # for per-node DNS/health-check/alarm resources.
+  # All control-plane instances, keyed by node number (1, 2, ...), for per-node
+  # DNS/health-check/alarm resources.
   control_plane_instances = merge(
     { "1" = aws_instance.control_plane },
     { for i, inst in aws_instance.control_plane_additional : tostring(tonumber(i) + 1) => inst }
@@ -252,7 +253,7 @@ module "node_bootstrap" {
   source = "../node-bootstrap"
 
   cluster_name                    = var.cluster_name
-  node_name                       = "cp-${var.cluster_name}-1"
+  node_name                       = local.control_plane_names["0"]
   node_fqdn_label                 = "cp-1"
   cluster_fqdn                    = local.cluster_fqdn
   cluster_fqdn_suffix             = local.fqdn_suffix
@@ -298,7 +299,7 @@ module "node_bootstrap_additional" {
   source = "../node-bootstrap"
 
   cluster_name         = var.cluster_name
-  node_name            = "cp-${var.cluster_name}-${tonumber(each.key) + 1}"
+  node_name            = local.control_plane_names[each.key]
   node_fqdn_label      = "cp-${tonumber(each.key) + 1}"
   cluster_fqdn         = local.cluster_fqdn
   cluster_fqdn_suffix  = local.fqdn_suffix
@@ -343,13 +344,13 @@ resource "aws_instance" "control_plane_additional" {
     volume_size           = var.root_volume_size_gb
     encrypted             = true
     delete_on_termination = true
-    tags                  = merge(local.common_tags, { Name = "cp-${var.cluster_name}-${tonumber(each.key) + 1}-root" })
+    tags                  = merge(local.common_tags, { Name = "${local.control_plane_names[each.key]}-root" })
   }
 
   user_data_base64            = base64gzip(local.combined_user_data[each.key])
   user_data_replace_on_change = true
 
-  tags = merge(local.common_tags, { Name = "cp-${var.cluster_name}-${tonumber(each.key) + 1}" })
+  tags = merge(local.common_tags, { Name = local.control_plane_names[each.key] })
 
   depends_on = [aws_instance.control_plane, var.destroy_after]
 
@@ -568,13 +569,13 @@ resource "aws_instance" "control_plane" {
     volume_size           = var.root_volume_size_gb
     encrypted             = true
     delete_on_termination = true
-    tags                  = merge(local.common_tags, { Name = "cp-${var.cluster_name}-1-root" })
+    tags                  = merge(local.common_tags, { Name = "${local.control_plane_names["0"]}-root" })
   }
 
   user_data_base64            = base64gzip(local.combined_user_data["0"])
   user_data_replace_on_change = true # disposable nodes: replace on bootstrap change
 
-  tags = merge(local.common_tags, { Name = "cp-${var.cluster_name}-1" })
+  tags = merge(local.common_tags, { Name = local.control_plane_names["0"] })
 
   # Marks every attached EBS volume (root + any CSI-provisioned data volumes)
   # delete-on-termination right before the instance is destroyed, so AWS cleans them up
@@ -645,4 +646,39 @@ resource "aws_route53_record" "wildcard" {
   type    = "A"
   ttl     = 60
   records = [aws_instance.control_plane.private_ip]
+}
+
+locals {
+  control_plane_zones = {
+    for i in range(var.control_plane_count) : tostring(i) => (
+      var.control_plane_count > 1 && length(local.distinct_control_plane_azs) > 0
+      ? local.distinct_control_plane_azs[i % length(local.distinct_control_plane_azs)]
+      : data.aws_subnet.selected.availability_zone
+    )
+  }
+
+  control_plane_names = {
+    for k, zone in local.control_plane_zones : k => (
+      var.node_name_template == null
+      ? "cp-${var.cluster_name}-${tonumber(k) + 1}"
+      : replace(replace(var.node_name_template, "{zone}", substr(zone, length(zone) - 1, 1)), "{number}", format("%02d", tonumber(k) + 1))
+    )
+  }
+
+  boot_script_parts = {
+    for k, name in local.control_plane_names : k => [
+      for script in var.boot_scripts : join("\n", [
+        "--${local.mime_boundary}",
+        "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
+        "",
+        "#!/bin/bash",
+        "export CLUSTER_NAME='${var.cluster_name}' NODE_ROLE='control-plane' NODE_NAME='${name}'",
+        "script=\"$(mktemp)\"",
+        "cat > \"$script\" <<'KUBE_COMPUTE_BOOT_SCRIPT'",
+        script,
+        "KUBE_COMPUTE_BOOT_SCRIPT",
+        "bash \"$script\" </dev/null",
+      ])
+    ]
+  }
 }

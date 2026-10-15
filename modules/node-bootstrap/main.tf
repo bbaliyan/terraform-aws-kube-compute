@@ -247,6 +247,16 @@ locals {
     # it only exposes a metrics endpoint, it doesn't change etcd's behavior, and
     # etcd only runs on server nodes anyway.
     "etcd-expose-metrics: true",
+    # Likewise, the scheduler and controller manager listen on 127.0.0.1 by
+    # default, where kube-platform's Prometheus can't scrape them (it reaches
+    # these host-network pods at the node IP), so their dashboards are empty
+    # and their TargetDown/InstanceUnreachable alerts fire on every cluster.
+    # Both ports (10259, 10257) are HTTPS and need an authorized token for
+    # /metrics; only the health endpoints are open, as on loopback.
+    "kube-scheduler-arg:",
+    "  - \"bind-address=0.0.0.0\"",
+    "kube-controller-manager-arg:",
+    "  - \"bind-address=0.0.0.0\"",
     # The control plane runs as static pods on the node. With requests the scheduler
     # counts its memory; the node reservation below covers only what runs outside pods.
     "control-plane-resource-requests: \"kube-apiserver-cpu=250m,kube-apiserver-memory=1024Mi,etcd-cpu=200m,etcd-memory=512Mi,kube-controller-manager-cpu=200m,kube-controller-manager-memory=256Mi,kube-scheduler-cpu=100m,kube-scheduler-memory=128Mi\"",

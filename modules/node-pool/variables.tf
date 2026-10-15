@@ -4,8 +4,8 @@ variable "cluster_name" {
   description = "Cluster identity this group joins. Must match the control plane's cluster_name."
   type        = string
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{0,30}$", var.cluster_name))
-    error_message = "cluster_name must be lowercase alphanumeric/hyphens, start with a letter, max 31 chars."
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,30}$", var.cluster_name))
+    error_message = "cluster_name must be lowercase alphanumeric/hyphens, start with a letter or digit, max 31 chars."
   }
 }
 
