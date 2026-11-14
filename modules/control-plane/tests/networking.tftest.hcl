@@ -11,6 +11,7 @@ mock_provider "aws" {
 }
 
 variables {
+  os_image_ami_id       = "ami-0123456789abcdef0"
   aws_region            = "eu-west-1"
   allowed_ingress_cidrs = ["10.0.0.0/8"]
 }
@@ -18,7 +19,7 @@ variables {
 run "explicit_subnet_and_arm64" {
   command = plan
   variables {
-    cluster_name  = "bharat"
+    cluster_name  = "example"
     instance_type = "m7g.large"
     subnet_id     = "subnet-explicit123"
   }
@@ -54,8 +55,8 @@ run "subnet_name_lookup" {
 # targets a whole data source, never one for_each instance, so every candidate
 # necessarily mocks to the same id and the same free-IP count. What IS
 # distinguishable under that constraint is covered below: room for the cluster,
-# no room anywhere, some room but too little, and an existing cluster staying
-# put in a subnet that has since filled.
+# no room anywhere, and some room but too little. subnet_choice.tftest.hcl
+# covers a placed cluster staying put in a subnet that has since filled.
 run "subnet_names_lookup" {
   command = plan
   override_data {
@@ -118,63 +119,6 @@ run "subnet_names_exactly_enough_free_ips" {
   }
 }
 
-# An existing control plane keeps the cluster in its subnet, however full the
-# candidates now are. Without this the plan would fail, or move the cluster.
-run "existing_cluster_stays_in_full_subnet" {
-  command = plan
-  override_data {
-    target = data.aws_subnet.by_name
-    values = { id = "subnet-other", available_ip_address_count = 0 }
-  }
-  override_data {
-    target = data.aws_instances.existing_control_plane
-    values = { ids = ["i-existing"] }
-  }
-  override_data {
-    target = data.aws_instance.existing_control_plane
-    values = { subnet_id = "subnet-placed" }
-  }
-  variables {
-    cluster_name        = "pool"
-    subnet_names        = ["private-az1", "private-az2"]
-    subnet_min_free_ips = 3
-  }
-  assert {
-    condition     = output.subnet_id == "subnet-placed"
-    error_message = "an existing cluster must stay in its control plane's subnet"
-  }
-  assert {
-    condition     = aws_instance.control_plane.subnet_id == "subnet-placed"
-    error_message = "the control plane must not be moved to another subnet"
-  }
-}
-
-# The same holds when the list itself changes: dropping or reordering subnets
-# does not move a cluster that already exists.
-run "existing_cluster_ignores_candidate_order" {
-  command = plan
-  override_data {
-    target = data.aws_subnet.by_name
-    values = { id = "subnet-first-candidate", available_ip_address_count = 250 }
-  }
-  override_data {
-    target = data.aws_instances.existing_control_plane
-    values = { ids = ["i-existing"] }
-  }
-  override_data {
-    target = data.aws_instance.existing_control_plane
-    values = { subnet_id = "subnet-placed" }
-  }
-  variables {
-    cluster_name = "pool"
-    subnet_names = ["private-az2", "private-az1"]
-  }
-  assert {
-    condition     = output.subnet_id == "subnet-placed"
-    error_message = "a roomier first candidate must not pull an existing cluster out of its subnet"
-  }
-}
-
 run "subnet_name_and_subnet_names_are_mutually_exclusive" {
   command = plan
   variables {
@@ -188,7 +132,7 @@ run "subnet_name_and_subnet_names_are_mutually_exclusive" {
 run "default_vpc_fallback" {
   command = plan
   variables {
-    cluster_name  = "bharat"
+    cluster_name  = "example"
     instance_type = "m7g.large"
     # subnet_id omitted -> null -> default-VPC fallback
   }
@@ -237,10 +181,11 @@ run "os_image_name_lookup" {
     values = { id = "ami-byname789" }
   }
   variables {
-    cluster_name  = "byname"
-    instance_type = "m7g.large"
-    subnet_id     = "subnet-x"
-    os_image_name = "almalinux10-arm64-kube-image-*"
+    cluster_name    = "byname"
+    instance_type   = "m7g.large"
+    subnet_id       = "subnet-x"
+    os_image_ami_id = null
+    os_image_name   = "almalinux10-arm64-kube-image-*"
   }
   assert {
     condition     = output.effective_ami_id == "ami-byname789"
@@ -277,4 +222,16 @@ run "storage_graviton_arm64" {
     condition     = output.node_arch == "arm64"
     error_message = "im4gn.large is Graviton-based; AWS API reports arm64"
   }
+}
+
+run "an_image_is_required" {
+  command = plan
+  variables {
+    cluster_name    = "noimage"
+    instance_type   = "m7g.large"
+    subnet_id       = "subnet-x"
+    os_image_ami_id = null
+    os_image_name   = null
+  }
+  expect_failures = [var.os_image_name]
 }

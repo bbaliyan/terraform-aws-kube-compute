@@ -9,10 +9,11 @@ mock_provider "aws" {
 }
 
 variables {
-  cluster_name              = "bharat"
+  os_image_ami_id           = "ami-0123456789abcdef0"
+  cluster_name              = "example"
   aws_region                = "eu-west-1"
   registration_address      = "10.0.1.5"
-  agent_token_ssm_parameter = "/kube-compute/bharat/agent-token"
+  agent_token_ssm_parameter = "/kube-compute/example/agent-token"
   security_group_ids        = ["sg-cluster123"]
   subnet_id                 = "subnet-cp-a"
 }
@@ -41,7 +42,7 @@ run "named_instances_not_a_group" {
   }
   assert {
     condition = alltrue([
-      for name, _ in output.node_refs : contains(["platform-bharat-1", "platform-bharat-2"], name)
+      for name, _ in output.node_refs : contains(["platform-example-1", "platform-example-2"], name)
     ])
     error_message = "node names must be <group>-<cluster>-<n>, numbered from 1 like the control plane's own cp-<cluster>-1"
   }
@@ -74,7 +75,11 @@ run "named_instances_not_a_group" {
     error_message = "availability_zone must come from the subnet, not be passed in separately"
   }
   assert {
-    condition     = length(aws_iam_role_policy_attachment.ebs_csi) == 1
+    condition     = length(output.node_iam_role_name) > 0
+    error_message = "node_iam_role_name must expose the role of the shared IAM module"
+  }
+  assert {
+    condition     = var.attach_ebs_csi_policy == true
     error_message = "the EBS CSI policy must be attached by default -- the CSI controller is an ordinary Deployment the scheduler can place on any node in this group"
   }
 }
@@ -97,7 +102,7 @@ run "each_node_gets_its_own_hostname_and_the_groups_taints" {
   }
 
   assert {
-    condition     = yamldecode(module.node_bootstrap["1"].cloud_init_user_data).hostname == "dedicated-bharat-1"
+    condition     = yamldecode(module.node_bootstrap["1"].cloud_init_user_data).hostname == "dedicated-example-1"
     error_message = "each node's cloud-init must set its own hostname -- RKE2 registers the Kubernetes node name from it, and a name Terraform chose is the reason this module exists"
   }
   assert {
@@ -109,7 +114,7 @@ run "each_node_gets_its_own_hostname_and_the_groups_taints" {
       for f in yamldecode(module.node_bootstrap["1"].cloud_init_user_data).write_files :
       strcontains(base64decode(f.content), "node-taint:") &&
       strcontains(base64decode(f.content), "dedicated=true:NoSchedule")
-      if f.path == "/opt/kube-compute/rke2-config-static.yaml"
+      if f.path == "/etc/rancher/rke2/config.yaml"
     ])
     error_message = "node_taints must reach the node's config.yaml -- without the taint a dedicated node is merely preferred and anything else can still land on it"
   }
@@ -119,14 +124,14 @@ run "each_node_gets_its_own_hostname_and_the_groups_taints" {
       strcontains(base64decode(f.content), "kube-compute.io/node-group=dedicated") &&
       strcontains(base64decode(f.content), "topology.kubernetes.io/zone=eu-west-1a") &&
       strcontains(base64decode(f.content), "workload=reserved")
-      if f.path == "/opt/kube-compute/rke2-config-static.yaml"
+      if f.path == "/etc/rancher/rke2/config.yaml"
     ])
     error_message = "the group label, the AZ label and the caller's own labels must all reach config.yaml -- a workload selects the node by one of them"
   }
   assert {
     condition = anytrue([
       for f in yamldecode(module.node_bootstrap["1"].cloud_init_user_data).write_files :
-      !strcontains(base64decode(f.content), "/kube-compute/bharat/agent-token'\nAGENT")
+      !strcontains(base64decode(f.content), "/kube-compute/example/agent-token'\nAGENT")
       if f.path == "/opt/kube-compute/secrets.env"
     ])
     error_message = "the join token itself must never be in user_data -- only the SSM fetch command that retrieves it at boot"
@@ -150,9 +155,10 @@ run "x86_instance_type_resolves_x86_images" {
   }
 
   variables {
-    group_name    = "dedicated"
-    instance_type = "r5a.large"
-    os_image_name = "almalinux10-*-kube-image-v1.36.2-*"
+    group_name      = "dedicated"
+    instance_type   = "r5a.large"
+    os_image_ami_id = null
+    os_image_name   = "almalinux10-*-kube-image-v1.36.2-*"
   }
 
   assert {
@@ -194,4 +200,15 @@ run "a_nodes_name_says_which_cluster_it_belongs_to" {
     ])
     error_message = "a node carries its group and its cluster, so two clusters in one account are told apart in the console"
   }
+}
+
+run "an_image_is_required" {
+  command = plan
+  variables {
+    group_name      = "noimage"
+    instance_type   = "r5a.large"
+    os_image_ami_id = null
+    os_image_name   = null
+  }
+  expect_failures = [var.os_image_name]
 }

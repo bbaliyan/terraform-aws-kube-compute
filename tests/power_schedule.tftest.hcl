@@ -5,7 +5,7 @@ mock_provider "aws" {
     defaults = { id = "lt-0123456789abcdef0" }
   }
   mock_resource "aws_iam_role" {
-    defaults = { arn = "arn:aws:iam::123456789012:role/kube-compute-bharat-stop" }
+    defaults = { arn = "arn:aws:iam::123456789012:role/kube-compute-example-stop" }
   }
   mock_data "aws_ec2_instance_type" {
     defaults = {
@@ -17,7 +17,8 @@ mock_provider "aws" {
 }
 
 variables {
-  cluster_name          = "bharat"
+  os_image_name         = "kube-image-*"
+  cluster_name          = "example"
   aws_region            = "eu-west-1"
   allowed_ingress_cidrs = ["10.0.0.0/8"]
   subnet_id             = "subnet-abc"
@@ -75,7 +76,7 @@ run "an_autoscaled_cluster_scales_every_group_to_zero_as_it_stops" {
       for schedule in aws_scheduler_schedule.scale_to_zero :
       schedule.schedule_expression == aws_scheduler_schedule.stop[0].schedule_expression &&
       schedule.schedule_expression_timezone == "Europe/London" &&
-      schedule.group_name == "bharat-to-zero"
+      schedule.group_name == "example-to-zero"
     ])
     error_message = "a group must go to zero at the moment the nodes stop, when nothing is left to scale it back up"
   }

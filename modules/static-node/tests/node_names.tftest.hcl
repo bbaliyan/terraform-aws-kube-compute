@@ -6,6 +6,7 @@ mock_provider "aws" {
 }
 
 variables {
+  os_image_ami_id           = "ami-0123456789abcdef0"
   cluster_name              = "7c-demo"
   group_name                = "platform"
   aws_region                = "eu-west-1"
@@ -40,20 +41,6 @@ run "the_template_gives_the_zone_and_number" {
   assert {
     condition     = aws_instance.node["1"].tags.Name == "demo-b-wk01" && aws_instance.node["2"].tags.Name == "demo-b-wk02"
     error_message = "got ${aws_instance.node["1"].tags.Name} and ${aws_instance.node["2"].tags.Name}"
-  }
-}
-
-run "boot_scripts_plan" {
-  command = plan
-
-  variables {
-    node_name_template = "demo-{zone}-wk{number}"
-    boot_scripts       = ["echo first", "echo second"]
-  }
-
-  assert {
-    condition     = length(aws_instance.node) == 2
-    error_message = "boot scripts must not change how many nodes there are"
   }
 }
 

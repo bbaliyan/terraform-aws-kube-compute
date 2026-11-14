@@ -7,7 +7,7 @@
 # optional() object-type attributes, not plain string variables passed through
 # a module call). coalesce() in main.tf's effective_gitops_platform_repo_url/
 # _revision locals is the actual fix; this test locks it in against the
-# cloud-init payload the same way it used to against the Ansible extra-vars.
+# cloud-init payload.
 
 variables {
   cluster_name        = "test"
@@ -34,8 +34,7 @@ run "null_repo_url_falls_back_to_the_pin" {
   assert {
     condition = anytrue([
       for f in yamldecode(output.cloud_init_user_data).write_files :
-      !strcontains(base64decode(f.content), "repoURL: null") &&
-      !strcontains(base64decode(f.content), "targetRevision: null")
+      alltrue([for s in yamldecode(base64decode(f.content)).spec.sources : s.repoURL != null && s.targetRevision != null])
       if f.path == "/opt/kube-compute/manifests/10-platform-app.yaml"
     ])
     error_message = "a literal null must never reach the platform Application manifest"
@@ -78,7 +77,8 @@ run "explicit_override_still_wins" {
 run "disabled_platform_renders_no_application_at_all" {
   command = plan
   variables {
-    gitops_platform_enabled = false
+    gitops_platform_enabled  = false
+    gitops_platform_repo_url = "https://example.test/platform.git"
   }
   assert {
     condition = !contains(
@@ -88,10 +88,11 @@ run "disabled_platform_renders_no_application_at_all" {
     error_message = "gitops_platform_enabled = false must skip the platform Application entirely, even though the pin would otherwise apply"
   }
   assert {
-    condition = !contains(
-      [for f in yamldecode(output.cloud_init_user_data).write_files : f.path],
-      "/opt/kube-compute/manifests/00-argocd.yaml"
-    )
-    error_message = "with no platform and no workloads Application, Argo CD itself must not be installed either"
+    condition = anytrue([
+      for f in yamldecode(output.cloud_init_user_data).write_files :
+      !strcontains(base64decode(f.content), "argocd.yaml")
+      if f.path == "/opt/kube-compute/node.env"
+    ])
+    error_message = "with no platform and no workloads Application, node.env must tell bootstrap.sh not to install Argo CD"
   }
 }

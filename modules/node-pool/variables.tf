@@ -82,15 +82,20 @@ variable "instance_type_max_sizes" {
 }
 
 variable "os_image_ami_id" {
-  description = "AMI ID for every instance type. Null = resolve os_image_name, or the latest AlmaLinux 10, for each instance type's architecture."
+  description = "AMI ID of a kube-images build for every instance type. Set this or os_image_name."
   type        = string
   default     = null
 }
 
 variable "os_image_name" {
-  description = "AMI name, e.g. kube-image's build name, resolved against this account's own AMIs for each instance type's architecture. Accepts EC2 Name-filter wildcards. Ignored when os_image_ami_id is set."
+  description = "AMI name, e.g. kube-images' build name, resolved against this account's own AMIs for each instance type's architecture. Accepts EC2 Name-filter wildcards. Ignored when os_image_ami_id is set."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.os_image_ami_id != null || var.os_image_name != null
+    error_message = "Set os_image_ami_id or os_image_name to a kube-images AMI. A stock image has no RKE2, so the node would never join."
+  }
 }
 
 variable "root_volume_size_gb" {

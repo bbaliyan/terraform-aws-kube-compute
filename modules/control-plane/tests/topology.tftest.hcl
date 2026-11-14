@@ -2,7 +2,8 @@
 mock_provider "aws" {}
 
 variables {
-  cluster_name          = "bharat"
+  os_image_ami_id       = "ami-0123456789abcdef0"
+  cluster_name          = "example"
   aws_region            = "eu-west-1"
   allowed_ingress_cidrs = ["10.0.0.0/8"]
   subnet_id             = "subnet-abc"
@@ -14,7 +15,7 @@ run "single_control_plane_default" {
     instance_type = "m7g.large"
   }
   assert {
-    condition     = aws_instance.control_plane.instance_type == "m7g.large"
+    condition     = aws_instance.control_plane["0"].instance_type == "m7g.large"
     error_message = "control_plane_count=1 (default) must plan exactly one control-plane instance"
   }
 }
@@ -49,7 +50,7 @@ run "dedicated_control_plane_still_plans_one_node" {
     cluster_type = "dedicated_control_plane"
   }
   assert {
-    condition     = aws_instance.control_plane.instance_type != ""
+    condition     = aws_instance.control_plane["0"].instance_type != ""
     error_message = "dedicated_control_plane must still plan the single control-plane node (taint content is asserted in node-bootstrap's own render tests)"
   }
 }

@@ -15,36 +15,10 @@ locals {
     for type in keys(var.instance_type_max_sizes) : type => coalesce(
       var.os_image_ami_id,
       try(data.aws_ami.by_name[type].id, null),
-      try(data.aws_ami.almalinux10[type].id, null),
     )
   }
 
   availability_zone = data.aws_subnet.selected.availability_zone
-
-  connectivity_user_data = <<-EOT
-    #!/bin/bash
-    systemctl enable --now amazon-ssm-agent 2>/dev/null || true
-  EOT
-
-  mime_boundary = "MIMEBOUNDARY"
-
-  combined_user_data = {
-    for type, bootstrap in module.node_bootstrap : type => join("\n", [
-      "Content-Type: multipart/mixed; boundary=\"${local.mime_boundary}\"",
-      "MIME-Version: 1.0",
-      "",
-      "--${local.mime_boundary}",
-      "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
-      "",
-      local.connectivity_user_data,
-      "--${local.mime_boundary}",
-      "Content-Type: text/cloud-config; charset=\"us-ascii\"",
-      "",
-      bootstrap.cloud_init_user_data,
-      "--${local.mime_boundary}--",
-      "",
-    ])
-  }
 
   agent_token_fetch_command = "aws ssm get-parameter --name '${var.agent_token_ssm_parameter}' --with-decryption --query Parameter.Value --output text --region ${var.aws_region}"
 
@@ -81,58 +55,22 @@ locals {
   }
 }
 
-resource "aws_iam_role" "node" {
+module "node_iam" {
+  source = "../node-iam"
+
   name_prefix = local.iam_name_prefix
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Action    = "sts:AssumeRole"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-  tags = local.common_tags
-}
-
-resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_role_policy_attachment" "ebs_csi" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
-
-resource "aws_iam_role_policy" "agent_token" {
-  name = "${local.resource_name}-agent-token-read"
-  role = aws_iam_role.node.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = "ssm:GetParameter"
-        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.agent_token_ssm_parameter}"
-      },
-      {
-        Effect   = "Allow"
-        Action   = "kms:Decrypt"
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com"
-          }
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_instance_profile" "node" {
-  name_prefix = local.iam_name_prefix
-  role        = aws_iam_role.node.name
   tags        = local.common_tags
+  aws_region  = var.aws_region
+  agent_token = {
+    policy_name   = "${local.resource_name}-agent-token-read"
+    ssm_parameter = var.agent_token_ssm_parameter
+  }
+}
+
+module "boot_steps" {
+  source = "../boot-steps"
+
+  aws_provider_id = true
 }
 
 # Every instance of a type boots the same render, so EC2 names the host rather than cloud-init.
@@ -152,7 +90,7 @@ module "node_bootstrap" {
   trusted_ca_in_image       = var.trusted_ca_in_image
   registry_mirror_url       = var.registry_mirror_url
   dns_servers               = var.dns_servers
-  aws_provider_id           = true
+  provider_steps            = module.boot_steps.steps
   graceful_shutdown         = var.graceful_shutdown
   os_auto_updates           = var.os_auto_updates
 }
@@ -165,7 +103,7 @@ resource "aws_launch_template" "node" {
   instance_type = each.key
 
   iam_instance_profile {
-    name = aws_iam_instance_profile.node.name
+    name = module.node_iam.instance_profile_name
   }
 
   vpc_security_group_ids = [var.cluster_security_group_id]
@@ -187,7 +125,7 @@ resource "aws_launch_template" "node" {
     }
   }
 
-  user_data = base64gzip(local.combined_user_data[each.key])
+  user_data = base64gzip(module.node_bootstrap[each.key].cloud_init_user_data)
 
   tag_specifications {
     resource_type = "volume"

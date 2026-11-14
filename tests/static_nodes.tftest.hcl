@@ -9,7 +9,8 @@ mock_provider "aws" {
 }
 
 variables {
-  cluster_name          = "bharat"
+  os_image_name         = "kube-image-*"
+  cluster_name          = "example"
   aws_region            = "eu-west-1"
   allowed_ingress_cidrs = ["10.0.0.0/8"]
   subnet_id             = "subnet-abc"
@@ -200,4 +201,13 @@ run "a_group_with_the_control_plane_template_is_refused" {
   }
 
   expect_failures = [output.all_instance_ids]
+}
+
+run "an_image_is_required" {
+  command = plan
+  variables {
+    os_image_ami_id = null
+    os_image_name   = null
+  }
+  expect_failures = [var.os_image_name]
 }

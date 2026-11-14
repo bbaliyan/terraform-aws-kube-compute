@@ -1,21 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-# Regression test for a real production bug: the platform Application's
-# rendered valuesObject must nest EVERY line of platform_helm_values_object/
-# extra_tags under spec.sources[0].helm.valuesObject, not just the first key.
-#
-# `indent(10, yamlencode(local.platform_values_object))` in main.tf only
-# accounted for valuesObject's own column (the template's literal leading
-# whitespace already places yamlencode's first line correctly) — every
-# continuation line landed 4 columns short of where it needed to be, spilling
-# nested keys out as siblings of helm/valuesObject itself. Kubernetes'
-# server-side schema validation then rejected the Application outright:
-# "unknown field spec.sources[0].helm.billing-code" and
-# "unknown field spec.sources[0].traefikExtraConfig" — the exact shape hit on
-# a real cluster (extra_tags = {"billing-code" = ...} plus a nested
-# platform_helm_values_object with ports.*.port-style structure). Fixed to
-# indent(14, ...), matching the interpolation's own 14-space leading
-# whitespace so yamlencode's 0-based nesting re-bases onto the template's
-# actual column instead of an arbitrary shorter one.
+# The platform Application must nest every key of platform_helm_values_object
+# and extra_tags under spec.sources[0].helm.valuesObject, not just the first.
+# A key that lands beside helm or valuesObject makes Kubernetes reject the
+# Application ("unknown field spec.sources[0].helm.billing-code").
 
 variables {
   cluster_name = "test"

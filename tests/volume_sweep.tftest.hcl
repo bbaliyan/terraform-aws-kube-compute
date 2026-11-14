@@ -3,6 +3,7 @@
 # show is the input it reads at that point -- the cluster whose volumes it matches and whether
 # it is switched on -- and that the switch never lands in count, where turning it off would
 # destroy the resource and so run the sweep against a cluster that is still running.
+# Not tested: the shell script itself -- the wait for volumes to detach, the volume lookup and the delete calls -- because a mock provider cannot run it.
 
 mock_provider "aws" {
   mock_resource "aws_launch_template" {
@@ -18,7 +19,8 @@ mock_provider "aws" {
 }
 
 variables {
-  cluster_name          = "bharat"
+  os_image_name         = "kube-image-*"
+  cluster_name          = "example"
   aws_region            = "eu-west-1"
   allowed_ingress_cidrs = ["10.0.0.0/8"]
   subnet_id             = "subnet-abc"
@@ -29,7 +31,7 @@ run "the_sweep_matches_this_cluster_in_its_own_region" {
   command = plan
 
   assert {
-    condition     = terraform_data.volume_sweep.input.cluster_name == "bharat"
+    condition     = terraform_data.volume_sweep.input.cluster_name == "example"
     error_message = "the sweep deletes by ClusterName tag, so it must carry this cluster's name and no other"
   }
 

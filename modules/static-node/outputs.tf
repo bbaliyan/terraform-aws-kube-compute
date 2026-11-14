@@ -43,7 +43,7 @@ output "effective_ami_id" {
 
 output "node_iam_role_name" {
   description = "IAM role name attached to every node in this group. Reference it to attach additional policies."
-  value       = aws_iam_role.node.name
+  value       = module.node_iam.role_name
 }
 
 output "node_labels" {

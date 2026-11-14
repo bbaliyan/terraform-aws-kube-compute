@@ -28,7 +28,7 @@ output "availability_zone" {
 
 output "node_iam_role_name" {
   description = "IAM role attached to every node of this role."
-  value       = aws_iam_role.node.name
+  value       = module.node_iam.role_name
 }
 
 output "node_labels" {

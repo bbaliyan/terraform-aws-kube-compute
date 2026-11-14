@@ -2,8 +2,6 @@
 # Read-only AWS lookups. No resource blocks belong in this file, ever.
 # The module NEVER creates network fabric — it only reads a subnet (given or default-VPC).
 
-data "aws_caller_identity" "current" {}
-
 data "aws_vpc" "default" {
   count   = local.has_explicit_subnet ? 0 : 1
   default = true
@@ -51,23 +49,6 @@ data "aws_route53_zone" "private" {
   private_zone = true
 }
 
-# This cluster's control plane, if it already exists, running or stopped. Found by its tags rather
-# than from state, so a cluster placed by an older version of this module is found too.
-data "aws_instances" "existing_control_plane" {
-  count = local.chooses_subnet ? 1 : 0
-
-  instance_tags = {
-    ClusterName = var.cluster_name
-    Name        = "kube-compute-${var.cluster_name}"
-  }
-  instance_state_names = ["pending", "running", "stopping", "stopped"]
-}
-
-data "aws_instance" "existing_control_plane" {
-  count       = length(try(data.aws_instances.existing_control_plane[0].ids, [])) > 0 ? 1 : 0
-  instance_id = sort(data.aws_instances.existing_control_plane[0].ids)[0]
-}
-
 # The subnet the node launches into. Also yields the VPC ID for the module-owned security group.
 data "aws_subnet" "selected" {
   id = local.effective_subnet_id
@@ -92,7 +73,7 @@ data "aws_ec2_instance_type" "selected" {
   instance_type = var.instance_type
 }
 
-# Self-owned AMI resolved by name (e.g. kube-image's own naming convention) — only when an
+# Self-owned AMI resolved by name (e.g. kube-images' own naming convention) — only when an
 # explicit ID isn't given but a name/pattern is. Scoped to this account (owners = ["self"])
 # and the derived architecture so an x86_64/arm64 pair sharing a version prefix can't collide.
 data "aws_ami" "by_name" {
@@ -106,32 +87,6 @@ data "aws_ami" "by_name" {
   filter {
     name   = "architecture"
     values = [local.ami_arch]
-  }
-  filter {
-    name   = "state"
-    values = ["available"]
-  }
-}
-
-# Latest AlmaLinux 10 for the derived arch — only when neither an explicit ID nor a name is given.
-# Owner 764336703387 is the AlmaLinux OS Foundation's AWS account (verified against the
-# AlmaLinux bug tracker and AlmaLinux/cloud-images repo); architecture isn't embedded in
-# the name (unlike AL2023's), so it's filtered separately below.
-data "aws_ami" "almalinux10" {
-  count       = (var.os_image_ami_id == null && var.os_image_name == null) ? 1 : 0
-  most_recent = true
-  owners      = ["764336703387"]
-  filter {
-    name   = "name"
-    values = ["AlmaLinux OS 10*"]
-  }
-  filter {
-    name   = "architecture"
-    values = [local.ami_arch]
-  }
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
   }
   filter {
     name   = "state"

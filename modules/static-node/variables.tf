@@ -27,7 +27,7 @@ variable "trusted_ca_pem" {
 }
 
 variable "trusted_ca_in_image" {
-  description = "Whether the node image already carries trusted_ca_pem at /etc/pki/ca-trust/source/anchors/trusted-ca.crt. Passed through to node-bootstrap, which then keeps the PEM out of user data while still using its value for containerd's TLS pin. It is a property of the image, so it applies to every node booting from it."
+  description = "Whether the node image already carries trusted_ca_pem at /etc/pki/ca-trust/source/anchors/trusted-ca.crt. If true, user data omits the PEM, but the value is still used for the containerd TLS pin. The boot program fails if the file is missing."
   type        = bool
   default     = false
 }
@@ -97,15 +97,20 @@ variable "instance_type" {
 }
 
 variable "os_image_ami_id" {
-  description = "AMI ID. Tested with AlmaLinux 10 (RHEL-family). Null = latest AlmaLinux 10 for the derived architecture."
+  description = "AMI ID of a kube-images build. Set this or os_image_name."
   type        = string
   default     = null
 }
 
 variable "os_image_name" {
-  description = "AMI name, e.g. kube-image's build name. Resolved against this account's own AMIs and the derived architecture. Accepts EC2 Name-filter wildcards, so one pattern with a wildcard architecture segment serves both architectures. Ignored when os_image_ami_id is set."
+  description = "AMI name, e.g. kube-images' build name. Resolved against this account's own AMIs and the derived architecture. Accepts EC2 Name-filter wildcards, so one pattern with a wildcard architecture segment serves both architectures. Ignored when os_image_ami_id is set."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.os_image_ami_id != null || var.os_image_name != null
+    error_message = "Set os_image_ami_id or os_image_name to a kube-images AMI. A stock image has no RKE2, so the node would never join."
+  }
 }
 
 variable "root_volume_size_gb" {
@@ -133,7 +138,7 @@ variable "node_taints" {
 }
 
 variable "attach_ebs_csi_policy" {
-  description = "Attach AmazonEBSCSIDriverPolicy to this group's IAM role. On by default: the EBS CSI controller is an ordinary Deployment the scheduler can place on any node that tolerates its taints, so a group without the policy breaks volume provisioning whenever it lands there. Set false only for a group you have kept the controller off by taint."
+  description = "Attach AmazonEBSCSIDriverPolicy to this group's IAM role. On by default, because the EBS CSI controller can run on any node that tolerates its taints. Set false only for a group that the controller is kept off by taint."
   type        = bool
   default     = true
 }
@@ -182,13 +187,3 @@ variable "node_name_template" {
   }
 }
 
-variable "boot_scripts" {
-  description = "Bash scripts run on each node of the group at its first boot, in order, before RKE2 is installed. Each sees CLUSTER_NAME, NODE_ROLE (worker) and NODE_NAME in its environment. A script that fails is logged by cloud-init and does not stop the node. Empty (the default) runs none."
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition     = alltrue([for script in var.boot_scripts : !can(regex("(?m)^KUBE_COMPUTE_BOOT_SCRIPT$", script))])
-    error_message = "A boot script must not have a line that is just KUBE_COMPUTE_BOOT_SCRIPT."
-  }
-}

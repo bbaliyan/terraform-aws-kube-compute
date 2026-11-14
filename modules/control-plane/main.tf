@@ -13,50 +13,14 @@ resource "random_password" "agent_token" {
 }
 
 locals {
-  # AlmaLinux community AMIs "likely" ship SSM Agent pre-installed but not guaranteed
-  # running, so this enables/starts it defensively (`|| true` covers the rare absent
-  # case). Independent of RKE2/node-bootstrap: SSM is this module's ongoing
-  # operator-access path (break-glass shell, verb-scripts — see node_control_ref below),
-  # not just a bootstrap-time transport.
-  connectivity_user_data = <<-EOT
-    #!/bin/bash
-    systemctl enable --now amazon-ssm-agent 2>/dev/null || true
-  EOT
-
-  # AWS accepts only one user_data string per instance. MIME multipart/mixed combines the
-  # SSM-enable script with node-bootstrap's #cloud-config payload without decoding/re-merging
-  # the YAML (which would couple this module to node-bootstrap's internal shape). Keyed like
-  # the module calls below: "0" for genesis, node_bootstrap_additional's keys for the rest.
-  mime_boundary = "MIMEBOUNDARY"
-
-  cloud_init_payloads = merge(
-    { "0" = module.node_bootstrap.cloud_init_user_data },
-    { for k, m in module.node_bootstrap_additional : k => m.cloud_init_user_data }
-  )
-
-  combined_user_data = {
-    for k, payload in local.cloud_init_payloads : k => join("\n", concat([
-      "Content-Type: multipart/mixed; boundary=\"${local.mime_boundary}\"",
-      "MIME-Version: 1.0",
-      "",
-      "--${local.mime_boundary}",
-      "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
-      "",
-      local.connectivity_user_data,
-      ], local.boot_script_parts[k], [
-      "--${local.mime_boundary}",
-      "Content-Type: text/cloud-config; charset=\"us-ascii\"",
-      "",
-      payload,
-      "--${local.mime_boundary}--",
-      "",
-    ]))
-  }
+  # node-bootstrap renders each node's whole user data.
+  combined_user_data = { for k, m in module.node_bootstrap : k => m.cloud_init_user_data }
 
   # EC2 rejects RunInstances when decoded user data exceeds 16384 bytes. Static
-  # content is kept out of the payload for that reason: the bootstrap program is
-  # baked into the node image, and so can a CA be (trusted_ca_in_image). The
-  # precondition on the instance turns AWS's rejection into a message naming both.
+  # content is kept out of the payload for that reason: the genesis node reads the
+  # Cilium render from the platform ref, and a CA can be baked (trusted_ca_in_image). The bootstrap
+  # program is in the payload with its comments removed. The precondition on the
+  # instance turns AWS's rejection into a message naming the inputs that fix it.
   inline_user_data_bytes = {
     for k, v in local.combined_user_data : k => floor(length(base64gzip(v)) / 4) * 3
   }
@@ -67,7 +31,6 @@ locals {
   effective_ami_id = coalesce(
     var.os_image_ami_id,
     try(one(data.aws_ami.by_name[*].id), null),
-    try(one(data.aws_ami.almalinux10[*].id), null),
   )
 
   # VPC ID resolved from vpc_name, or null when vpc_name is not provided.
@@ -83,11 +46,6 @@ locals {
   # Whether the subnet comes from subnet_names, the only case where the module chooses one.
   chooses_subnet = var.subnet_id == null && length(local.subnet_name_candidates) > 0
 
-  # The subnet an existing control plane already sits in. A cluster stays there: the candidates are
-  # read afresh on every plan, and without this a subnet filling up after the cluster was placed
-  # would move it, replacing every node and leaving its EBS volumes in the zone it left.
-  existing_subnet_id = try(data.aws_instance.existing_control_plane[0].subnet_id, null)
-
   # For a new cluster, the first candidate in the caller's order with room for every node it
   # launches with. A subnet with some free addresses but too few would be chosen, then fail the
   # apply partway through.
@@ -97,7 +55,9 @@ locals {
     if data.aws_subnet.by_name[name].available_ip_address_count >= var.subnet_min_free_ips
   ][0], null)
 
-  named_subnet_id = local.existing_subnet_id != null ? local.existing_subnet_id : local.roomy_subnet_id
+  # input, not output: output is unknown until the first apply, and the plan of a new cluster
+  # must already know its subnet.
+  named_subnet_id = try(terraform_data.subnet_choice[0].input, null)
 
   # Network handle: explicit subnet_id → named subnet → first default-VPC subnet. Never creates fabric.
   # Wrapped in try so that resolving to nothing stays null: coalesce raises on all-null arguments,
@@ -107,7 +67,7 @@ locals {
 
   # DNS is optional and name-only. cluster_fqdn is the API/kubeconfig name; wildcard covers it + services.
   has_domain    = var.cluster_domain != null
-  fqdn_suffix   = local.has_domain ? "${coalesce(var.cluster_dns_name, var.cluster_name)}.${var.cluster_domain}" : null
+  fqdn_suffix   = local.has_domain ? "${var.cluster_name}.${var.cluster_domain}" : null
   cluster_fqdn  = local.has_domain ? "api.${local.fqdn_suffix}" : null
   wildcard_name = local.has_domain ? "*.${local.fqdn_suffix}" : null
   # coalesce() errors if every argument is null (the common case: no DNS configured at
@@ -147,7 +107,18 @@ locals {
   # HA mode derives VPC from the control-plane subnets themselves, not the single-node
   # fallback (unused once control_plane_count > 1) — avoids creating SGs/the NLB target
   # group in a different VPC than where instances actually launch.
-  module_vpc_id = var.control_plane_count > 1 ? data.aws_subnet.control_plane_genesis[0].vpc_id : data.aws_subnet.selected.vpc_id
+  #
+  # For a subnet_names cluster the VPC comes from the candidate lookup that holds the chosen
+  # subnet, not from data.aws_subnet.selected. That data source reads the choice resource, so
+  # on the first plan after an upgrade it waits for the apply, the VPC is unknown, and the
+  # security groups would be replaced. The candidates do not wait.
+  chosen_candidate_vpc_ids = [for s in data.aws_subnet.by_name : s.vpc_id if s.id == local.named_subnet_id]
+  chosen_candidate_azs     = [for s in data.aws_subnet.by_name : s.availability_zone if s.id == local.named_subnet_id]
+  module_vpc_id = (
+    var.control_plane_count > 1 ? data.aws_subnet.control_plane_genesis[0].vpc_id
+    : length(local.chosen_candidate_vpc_ids) > 0 ? local.chosen_candidate_vpc_ids[0]
+    : data.aws_subnet.selected.vpc_id
+  )
 
   # Null when control_plane_count = 1. Otherwise depends on endpoint_mode: NLB DNS name
   # (loadbalancer, default), shared Route53 record (dns), or static_registration_address (static).
@@ -157,11 +128,6 @@ locals {
     try(aws_lb.control_plane[0].dns_name, null)
   )
 
-  # Cilium is standard regardless of topology — Canal/flannel's iptables/ipset dataplane is
-  # broken on AlmaLinux 10 (this project's only supported OS; see node-bootstrap's cni
-  # variable). null = default.
-  effective_cni = coalesce(var.cni, "cilium")
-
   # dns mode's shared record name, distinct from cluster_fqdn (the kubeconfig/API-cert
   # name). Null unless a domain is configured; enforced by the precondition on
   # aws_instance.control_plane below.
@@ -169,15 +135,29 @@ locals {
 
   # All control-plane instances, keyed by node number (1, 2, ...), for per-node
   # DNS/health-check/alarm resources.
-  control_plane_instances = merge(
-    { "1" = aws_instance.control_plane },
-    { for i, inst in aws_instance.control_plane_additional : tostring(tonumber(i) + 1) => inst }
-  )
+  control_plane_instances = {
+    for k, inst in aws_instance.control_plane : tostring(tonumber(k) + 1) => inst
+  }
 
   common_tags = merge(var.extra_tags, {
     ClusterName = var.cluster_name
     ManagedBy   = "kube-compute"
   })
+}
+
+# The subnet chosen from subnet_names, kept in state so the cluster stays there. The candidates are
+# read afresh on every plan: without this, a subnet that filled up after the cluster was placed
+# would move it, replacing every node and leaving its EBS volumes in the zone it left. The choice
+# is held here rather than by ignore_changes on the instances, because the security groups' VPC,
+# the zone in node names and the subnet that workers follow all derive from it too.
+resource "terraform_data" "subnet_choice" {
+  count = local.chooses_subnet ? 1 : 0
+
+  input = local.roomy_subnet_id
+
+  lifecycle {
+    ignore_changes = [input]
+  }
 }
 
 # ---- Delivery: the agent token is mirrored into an SSM SecureString and fetched at
@@ -220,143 +200,55 @@ resource "aws_vpc_security_group_egress_rule" "cluster_all" {
   tags              = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-cluster-egress-all" })
 }
 
-resource "aws_security_group" "control_plane_etcd" {
-  name_prefix = "kube-compute-${var.cluster_name}-etcd-"
-  description = "kube-compute ${var.cluster_name}: etcd peer/client traffic, control-plane nodes only."
-  vpc_id      = local.module_vpc_id
-  tags        = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-etcd" })
+# Key "0" is genesis (server-init); every other key joins it (server-join). The
+# GitOps inputs reach genesis only: the platform bootstrap runs on the first server.
+# A joining node gets each input's node-bootstrap default, so its render is the
+# same as when it had a module call of its own.
+#
+# node-bootstrap renders at plan time and runs nothing, so a joining node that
+# boots before genesis is ready relies on RKE2's own join retry. Ordering among
+# the joining nodes (one etcd learner at a time) is handled by bootstrap.sh.
+module "boot_steps" {
+  source = "../boot-steps"
 
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "etcd_peer" {
-  security_group_id            = aws_security_group.control_plane_etcd.id
-  description                  = "etcd peer/client traffic among control-plane nodes"
-  ip_protocol                  = "tcp"
-  from_port                    = 2379
-  to_port                      = 2380
-  referenced_security_group_id = aws_security_group.control_plane_etcd.id
-  tags                         = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-etcd-peer" })
-}
-
-resource "aws_vpc_security_group_egress_rule" "etcd_all" {
-  security_group_id = aws_security_group.control_plane_etcd.id
-  description       = "all egress"
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
-  tags              = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-etcd-egress-all" })
+  aws_provider_id = var.aws_provider_id
 }
 
 module "node_bootstrap" {
+  for_each = { for i in range(var.control_plane_count) : tostring(i) => i }
+
   source = "../node-bootstrap"
 
   cluster_name                    = var.cluster_name
-  node_name                       = local.control_plane_names["0"]
-  node_fqdn_label                 = "cp-1"
+  node_name                       = local.control_plane_names[each.key]
+  node_fqdn_label                 = "cp-${each.value + 1}"
   cluster_fqdn                    = local.cluster_fqdn
   cluster_fqdn_suffix             = local.fqdn_suffix
-  node_role                       = "server-init"
+  node_role                       = each.key == "0" ? "server-init" : "server-join"
   control_plane_taint             = local.control_plane_taint
-  cni                             = local.effective_cni
   cluster_token                   = random_password.server_token.result
-  cluster_agent_token             = random_password.agent_token.result
+  cluster_agent_token             = each.key == "0" ? random_password.agent_token.result : null
   registration_address            = local.registration_address
   extra_tls_sans                  = [for v in [local.registration_address, local.wildcard_name] : v if v != null]
   trusted_ca_pem                  = var.trusted_ca_pem
   trusted_ca_in_image             = var.trusted_ca_in_image
   registry_mirror_url             = var.registry_mirror_url
   dns_servers                     = var.dns_servers
-  gitops_platform_enabled         = var.gitops_platform_enabled
-  gitops_platform_repo_url        = var.gitops_platform_repo_url_override
-  gitops_platform_revision        = var.gitops_platform_revision_override
-  gitops_workloads_repo_url       = var.gitops_workloads_repo_url
-  gitops_workloads_revision       = var.gitops_workloads_revision
-  gitops_workloads_path           = var.gitops_workloads_path
-  workloads_extra_helm_parameters = var.workloads_extra_helm_parameters
-  workloads_helm_values_object    = var.workloads_helm_values_object
+  gitops_platform_enabled         = each.key == "0" ? var.gitops_platform_enabled : true
+  gitops_platform_repo_url        = each.key == "0" ? var.gitops_platform_repo_url_override : null
+  gitops_platform_revision        = each.key == "0" ? var.gitops_platform_revision_override : null
+  gitops_workloads_repo_url       = each.key == "0" ? var.gitops_workloads_repo_url : null
+  gitops_workloads_revision       = each.key == "0" ? var.gitops_workloads_revision : "main"
+  gitops_workloads_path           = each.key == "0" ? var.gitops_workloads_path : "."
+  workloads_extra_helm_parameters = each.key == "0" ? var.workloads_extra_helm_parameters : {}
+  workloads_helm_values_object    = each.key == "0" ? var.workloads_helm_values_object : null
   cert_mode                       = var.cert_mode
-  platform_extra_helm_parameters  = var.platform_extra_helm_parameters
-  platform_helm_values_object     = var.platform_helm_values_object
+  platform_extra_helm_parameters  = each.key == "0" ? var.platform_extra_helm_parameters : {}
+  platform_helm_values_object     = each.key == "0" ? var.platform_helm_values_object : null
   extra_tags                      = var.extra_tags
-  aws_provider_id                 = var.aws_provider_id
+  provider_steps                  = module.boot_steps.steps
   graceful_shutdown               = var.graceful_shutdown
   os_auto_updates                 = var.os_auto_updates
-
-  # The AWS image bakes no Cluster API install manifest.
-  cluster_autoscaler_capi_install_baked = false
-}
-
-# node-bootstrap renders a plan-time-only cloud-init payload (no live connection to wait
-# on), so ordering relies on RKE2's own join retry: a sibling starting alongside genesis
-# just retries its connection until genesis is ready. Ordering among the additional nodes
-# themselves (one non-voting etcd learner at a time) is handled by node-bootstrap's own
-# staggered join-race retry inside bootstrap.sh.
-module "node_bootstrap_additional" {
-  for_each = var.control_plane_count > 1 ? { for i in range(1, var.control_plane_count) : tostring(i) => i } : {}
-
-  source = "../node-bootstrap"
-
-  cluster_name         = var.cluster_name
-  node_name            = local.control_plane_names[each.key]
-  node_fqdn_label      = "cp-${tonumber(each.key) + 1}"
-  cluster_fqdn         = local.cluster_fqdn
-  cluster_fqdn_suffix  = local.fqdn_suffix
-  node_role            = "server-join"
-  control_plane_taint  = local.control_plane_taint
-  cni                  = local.effective_cni
-  registration_address = local.registration_address
-  extra_tls_sans       = [for v in [local.registration_address, local.wildcard_name] : v if v != null]
-  cluster_token        = random_password.server_token.result
-  trusted_ca_pem       = var.trusted_ca_pem
-  trusted_ca_in_image  = var.trusted_ca_in_image
-  registry_mirror_url  = var.registry_mirror_url
-  dns_servers          = var.dns_servers
-  cert_mode            = var.cert_mode
-  extra_tags           = var.extra_tags
-  aws_provider_id      = var.aws_provider_id
-  graceful_shutdown    = var.graceful_shutdown
-  os_auto_updates      = var.os_auto_updates
-  # gitops_* intentionally omitted (defaults to null): Argo/platform bootstrap runs on the
-  # first server only — node-bootstrap also enforces this at the task level.
-}
-
-resource "aws_instance" "control_plane_additional" {
-  for_each = var.control_plane_count > 1 && length(local.control_plane_subnet_ids) > 0 ? { for i in range(1, var.control_plane_count) : tostring(i) => local.control_plane_subnet_ids[i] } : {}
-
-  ami                    = local.effective_ami_id
-  instance_type          = var.instance_type
-  subnet_id              = each.value
-  vpc_security_group_ids = [aws_security_group.node.id, aws_security_group.cluster.id, aws_security_group.control_plane_etcd.id]
-  iam_instance_profile   = aws_iam_instance_profile.node.name
-
-  # hop_limit 3, not AWS's generally-documented 2: confirmed live that 2 isn't enough for a
-  # pod's IMDSv2 token PUT to complete through Cilium — see the genesis instance below.
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 3
-  }
-
-  root_block_device {
-    volume_type           = var.root_volume_type
-    volume_size           = var.root_volume_size_gb
-    encrypted             = true
-    delete_on_termination = true
-    tags                  = merge(local.common_tags, { Name = "${local.control_plane_names[each.key]}-root" })
-  }
-
-  user_data_base64            = base64gzip(local.combined_user_data[each.key])
-  user_data_replace_on_change = true
-
-  tags = merge(local.common_tags, { Name = local.control_plane_names[each.key] })
-
-  depends_on = [aws_instance.control_plane, var.destroy_after]
-
-  lifecycle {
-    ignore_changes = [ami]
-  }
 }
 
 # No registration endpoint for control_plane_count = 1. Internal NLB is the default HA mode
@@ -404,12 +296,12 @@ resource "aws_lb_listener" "control_plane" {
 resource "aws_lb_target_group_attachment" "genesis" {
   count            = var.control_plane_count > 1 && var.endpoint_mode == "loadbalancer" ? 1 : 0
   target_group_arn = aws_lb_target_group.control_plane[0].arn
-  target_id        = aws_instance.control_plane.id
+  target_id        = aws_instance.control_plane["0"].id
   port             = 6443
 }
 
 resource "aws_lb_target_group_attachment" "additional" {
-  for_each         = var.endpoint_mode == "loadbalancer" ? aws_instance.control_plane_additional : {}
+  for_each         = var.endpoint_mode == "loadbalancer" ? { for k, inst in aws_instance.control_plane : k => inst if k != "0" } : {}
   target_group_arn = aws_lb_target_group.control_plane[0].arn
   target_id        = each.value.id
   port             = 6443
@@ -467,8 +359,7 @@ resource "aws_security_group" "node" {
 
   lifecycle {
     # create_before_destroy avoids a name_prefix collision when the SG is replaced. The
-    # instance's SG re-association is a separate apply step, so this is not zero-downtime —
-    # acceptable for disposable dev clusters.
+    # instance's SG re-association is a separate apply step, so this is not zero-downtime.
     create_before_destroy = true
   }
 }
@@ -510,47 +401,34 @@ resource "aws_vpc_security_group_egress_rule" "node_all" {
   tags              = merge(local.common_tags, { Name = "kube-compute-${var.cluster_name}-egress-all" })
 }
 
-# Inline JSON avoids a data.aws_iam_policy_document block that mock_provider cannot evaluate.
-resource "aws_iam_role" "node" {
+module "node_iam" {
+  source = "../node-iam"
+
   name_prefix = local.node_iam_name_prefix
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Action    = "sts:AssumeRole"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-  tags = local.common_tags
-}
-
-resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_role_policy_attachment" "ebs_csi" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
-
-resource "aws_iam_instance_profile" "node" {
-  name_prefix = local.node_iam_name_prefix
-  role        = aws_iam_role.node.name
   tags        = local.common_tags
+  aws_region  = var.aws_region
 }
 
-# Additional nodes (server-join) are provisioned below in aws_instance.control_plane_additional.
-# The precondition fails plan explicitly when control_plane_count > 1 but fewer than 3 distinct
-# AZs resolved, rather than silently under-spreading the quorum.
+# One instance per control-plane node; key "0" is genesis. The precondition fails plan
+# explicitly when control_plane_count > 1 but fewer than 3 distinct AZs resolved, rather
+# than silently under-spreading the quorum. The other nodes are left out of for_each
+# then, so the precondition reports it and not an index error.
+#
+# A resource cannot depend on its own instances, so the nodes start together. A
+# joining node retries until genesis answers.
 resource "aws_instance" "control_plane" {
+  for_each = {
+    for i in range(var.control_plane_count) : tostring(i) => try(local.control_plane_subnet_ids[i], local.genesis_subnet_id)
+    if i == 0 || length(local.control_plane_subnet_ids) > 0
+  }
+
   depends_on = [var.destroy_after]
 
   ami                    = local.effective_ami_id
   instance_type          = var.instance_type
-  subnet_id              = local.genesis_subnet_id
-  vpc_security_group_ids = [aws_security_group.node.id, aws_security_group.cluster.id, aws_security_group.control_plane_etcd.id]
-  iam_instance_profile   = aws_iam_instance_profile.node.name
+  subnet_id              = each.value
+  vpc_security_group_ids = [aws_security_group.node.id, aws_security_group.cluster.id]
+  iam_instance_profile   = module.node_iam.instance_profile_name
 
   # hop_limit 3, not AWS's commonly-documented 2. Confirmed live: with hop_limit 2, a pod's
   # IMDSv2 token PUT completes its TCP handshake (proving pod<->host routing works) but the
@@ -569,40 +447,16 @@ resource "aws_instance" "control_plane" {
     volume_size           = var.root_volume_size_gb
     encrypted             = true
     delete_on_termination = true
-    tags                  = merge(local.common_tags, { Name = "${local.control_plane_names["0"]}-root" })
+    tags                  = merge(local.common_tags, { Name = "${local.control_plane_names[each.key]}-root" })
   }
 
-  user_data_base64            = base64gzip(local.combined_user_data["0"])
-  user_data_replace_on_change = true # disposable nodes: replace on bootstrap change
+  user_data_base64 = base64gzip(local.combined_user_data[each.key])
 
-  tags = merge(local.common_tags, { Name = local.control_plane_names["0"] })
-
-  # Marks every attached EBS volume (root + any CSI-provisioned data volumes)
-  # delete-on-termination right before the instance is destroyed, so AWS cleans them up
-  # without needing the API server/kubectl/SSM reachable at destroy time.
-  #
-  # Destroy-time provisioners may only reference `self` (Terraform rejects var./resource
-  # references here to avoid destroy-order cycles) — region is derived from
-  # self.availability_zone since var.aws_region isn't allowed.
-  provisioner "local-exec" {
-    when       = destroy
-    on_failure = continue
-    command    = <<-EOT
-      REGION="${substr(self.availability_zone, 0, length(self.availability_zone) - 1)}"
-      MAPPINGS=$(aws ec2 describe-volumes --region "$REGION" \
-        --filters Name=attachment.instance-id,Values=${self.id} \
-        --query 'Volumes[].Attachments[0].{DeviceName:Device,Ebs:{DeleteOnTermination:`true`}}' \
-        --output json)
-      if [ -n "$MAPPINGS" ] && [ "$MAPPINGS" != "[]" ]; then
-        aws ec2 modify-instance-attribute --region "$REGION" \
-          --instance-id ${self.id} --block-device-mappings "$MAPPINGS"
-      fi
-    EOT
-  }
+  tags = merge(local.common_tags, { Name = local.control_plane_names[each.key] })
 
   lifecycle {
     # Don't replace on AlmaLinux 10 AMI patch drift; remove to deliberately upgrade.
-    ignore_changes = [ami]
+    ignore_changes = [ami, user_data_base64]
 
     precondition {
       condition     = var.control_plane_count == 1 || length(local.distinct_control_plane_azs) >= 3
@@ -614,8 +468,8 @@ resource "aws_instance" "control_plane" {
       # created the role, the security groups and the token parameter. The payload's
       # size is not knowable until apply -- it carries a generated token -- so this
       # runs at apply and names the input that fixes it.
-      condition     = local.inline_user_data_bytes["0"] <= 16384
-      error_message = "This node's boot payload is larger than EC2 allows in user data (16384 decoded bytes). What travels in it should be per-cluster values, not static content: check that the node image bakes the bootstrap program, set trusted_ca_in_image if it also bakes the CA, and look at what the platform Application's Helm values are carrying."
+      condition     = local.inline_user_data_bytes[each.key] <= 16384
+      error_message = "This node's boot payload is larger than EC2 allows in user data (16384 decoded bytes). What travels in it should be per-cluster values, not static content: set trusted_ca_in_image if the node image bakes the CA, and look at what the platform Application's Helm values are carrying."
     }
 
     precondition {
@@ -634,7 +488,7 @@ resource "aws_route53_record" "api" {
   name    = local.cluster_fqdn
   type    = "A"
   ttl     = 60
-  records = [aws_instance.control_plane.private_ip]
+  records = [aws_instance.control_plane["0"].private_ip]
 }
 
 # Created only when cluster_domain is set and a zone is resolvable. Otherwise register
@@ -645,7 +499,7 @@ resource "aws_route53_record" "wildcard" {
   name    = local.wildcard_name
   type    = "A"
   ttl     = 60
-  records = [aws_instance.control_plane.private_ip]
+  records = [aws_instance.control_plane["0"].private_ip]
 }
 
 locals {
@@ -653,6 +507,7 @@ locals {
     for i in range(var.control_plane_count) : tostring(i) => (
       var.control_plane_count > 1 && length(local.distinct_control_plane_azs) > 0
       ? local.distinct_control_plane_azs[i % length(local.distinct_control_plane_azs)]
+      : length(local.chosen_candidate_azs) > 0 ? local.chosen_candidate_azs[0]
       : data.aws_subnet.selected.availability_zone
     )
   }
@@ -663,22 +518,5 @@ locals {
       ? "cp-${var.cluster_name}-${tonumber(k) + 1}"
       : replace(replace(var.node_name_template, "{zone}", substr(zone, length(zone) - 1, 1)), "{number}", format("%02d", tonumber(k) + 1))
     )
-  }
-
-  boot_script_parts = {
-    for k, name in local.control_plane_names : k => [
-      for script in var.boot_scripts : join("\n", [
-        "--${local.mime_boundary}",
-        "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
-        "",
-        "#!/bin/bash",
-        "export CLUSTER_NAME='${var.cluster_name}' NODE_ROLE='control-plane' NODE_NAME='${name}'",
-        "script=\"$(mktemp)\"",
-        "cat > \"$script\" <<'KUBE_COMPUTE_BOOT_SCRIPT'",
-        script,
-        "KUBE_COMPUTE_BOOT_SCRIPT",
-        "bash \"$script\" </dev/null",
-      ])
-    ]
   }
 }

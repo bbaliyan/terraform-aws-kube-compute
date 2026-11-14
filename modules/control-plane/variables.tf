@@ -30,7 +30,7 @@ variable "registry_mirror_url" {
 }
 
 variable "dns_servers" {
-  description = "Upstream DNS resolver IPs, passed through to node-bootstrap to give kubelet a search-domain-free resolv-conf — defense in depth against any node-inherited DNS search domain colliding with a wildcard cluster DNS record (*.<cluster>.<domain>, see cluster_domain), on top of node-bootstrap's own prefer_fqdn_over_hostname fix for the specific hostname-derived case (e.g. a VPC DHCP-provided domain this module has no control over, if that ever turns out to be wildcarded too). Null/empty (the default) leaves kubelet's default ClusterFirst DNS policy in place: every pod inherits this node's own /etc/resolv.conf search domain(s) verbatim. 169.254.169.253 (the VPC's own Amazon-provided DNS Resolver, reachable from any subnet regardless of the VPC's DHCP option set) is a safe default for a standard VPC; use the account's actual resolver(s) if the VPC's DHCP options point elsewhere."
+  description = "Upstream DNS resolver IPs. They give kubelet a resolv-conf with no search domain, so a node search domain cannot match the wildcard cluster record. Null keeps the kubelet default. 169.254.169.253 is the Amazon-provided resolver."
   type        = list(string)
   default     = null
 }
@@ -78,22 +78,12 @@ variable "aws_region" {
 }
 
 variable "cluster_type" {
-  description = "Cluster topology intent: 'all_in_one' (control-plane nodes stay schedulable — every single-node cluster, and a small HA cluster doing double duty) or 'dedicated_control_plane' (control-plane nodes are tainted so user workloads run only on separate node pools). Taint cannot be derived from worker count because node pools are separate state this module cannot see."
+  description = "Cluster topology: 'all_in_one' (control-plane nodes stay schedulable) or 'dedicated_control_plane' (control-plane nodes are tainted, so workloads run only on node pools). The module cannot derive this from the worker count, because node pools are separate state."
   type        = string
   default     = "all_in_one"
   validation {
     condition     = contains(["all_in_one", "dedicated_control_plane"], var.cluster_type)
     error_message = "cluster_type must be 'all_in_one' or 'dedicated_control_plane'."
-  }
-}
-
-variable "cni" {
-  description = "CNI to install: 'default' or 'cilium'. Null (default) resolves to 'cilium' regardless of topology — Canal/flannel's iptables/ipset dataplane ('default') is broken on AlmaLinux 10, this project's only supported OS (its kernel dropped modules flannel and Felix require). 'default' remains selectable as an escape hatch for a consumer-supplied playbook targeting a different OS. Set explicitly to override."
-  type        = string
-  default     = null
-  validation {
-    condition     = var.cni == null || contains(["default", "cilium"], var.cni)
-    error_message = "cni must be null, 'default', or 'cilium'."
   }
 }
 
@@ -108,7 +98,7 @@ variable "control_plane_count" {
 }
 
 variable "control_plane_subnets" {
-  description = "Map of availability zone -> subnet id for control-plane placement, required when control_plane_count > 1 (one control-plane node per AZ, across at least 3 distinct AZs — the map's keys ARE those AZs, so the module needs no lookup to discover them). Ignored when control_plane_count = 1 — use subnet_id/subnet_name instead. The module never creates fabric; every value must be an existing subnet's id, already located in the AZ given by its key."
+  description = "Map of availability zone to subnet id for control-plane placement. Required when control_plane_count > 1: one node per AZ, in at least 3 AZs. Ignored for one node; use subnet_id or subnet_name. Each subnet must already exist in the AZ of its key."
   type        = map(string)
   default     = null
 
@@ -119,7 +109,7 @@ variable "control_plane_subnets" {
 }
 
 variable "endpoint_mode" {
-  description = "How joining nodes reach the registration endpoint once control_plane_count > 1 (ignored for control_plane_count = 1, which has no endpoint at all): \"loadbalancer\" (default) creates an internal NLB; \"dns\" creates Route53 multivalue-answer A records with CloudWatch-alarm-backed health checks (cheaper, TTL-bound failover; requires cluster_domain plus a resolvable hosted zone); \"static\" creates neither and uses static_registration_address verbatim (bring your own load balancer/address)."
+  description = "How joining nodes reach the registration endpoint when control_plane_count > 1: 'loadbalancer' (default) creates an internal NLB; 'dns' creates Route53 multivalue records with health checks and needs cluster_domain and a hosted zone; 'static' uses static_registration_address as given."
   type        = string
   default     = "loadbalancer"
   validation {
@@ -163,17 +153,7 @@ variable "subnet_name" {
 }
 
 variable "subnet_names" {
-  description = <<-EOT
-    Candidate subnets by Name tag, in order of preference. A new cluster is placed in the first one
-    with subnet_min_free_ips free addresses, so a full subnet, or one too nearly full to take the
-    cluster, falls through to the next. The list form of subnet_name.
-
-    The choice is made once. A cluster whose control plane already exists, running or stopped,
-    stays in that control plane's subnet whatever this list says or however full that subnet
-    becomes: it is never moved by an apply. The candidates may be in different availability zones,
-    since a cluster only ever occupies the one it was placed in. To move a cluster, destroy it and
-    apply again.
-  EOT
+  description = "Candidate subnets by Name tag, in order of preference. The first with subnet_min_free_ips free addresses wins, and the choice stays in state. To choose again, replace terraform_data.subnet_choice[0]; a new choice replaces every node. List form of subnet_name."
   type        = list(string)
   default     = null
 
@@ -202,18 +182,8 @@ variable "subnet_min_free_ips" {
 # DNS: optional convenience. The module never owns DNS as a hard dependency — if you don't pass a
 # zone, it creates no record and you register the wildcard (see the wildcard_dns_name output) in
 # whatever DNS you run (Route53, a local resolver, RFC2136, external-dns, sslip.io fallback...).
-variable "cluster_dns_name" {
-  description = "Name to use in DNS in place of cluster_name, so that the FQDN is <cluster_dns_name>.<cluster_domain>. Null (the default) uses cluster_name. Set this where cluster_name carries something the domain already says: with cluster_name = \"app-red\" and cluster_domain = \"red.example.internal\", cluster_dns_name = \"app\" keeps the name app.red.example.internal while tags, resource names and the agent token parameter stay unique to that cluster."
-  type        = string
-  default     = null
-  validation {
-    condition     = var.cluster_dns_name == null || can(regex("^[a-z0-9][a-z0-9-]{0,30}$", var.cluster_dns_name))
-    error_message = "cluster_dns_name must be lowercase alphanumeric/hyphens, start with a letter or digit, max 31 chars."
-  }
-}
-
 variable "cluster_domain" {
-  description = "Optional DNS suffix for the cluster, e.g. 'example.internal'. When set, the FQDN is <cluster_name>.<cluster_domain> and the wildcard is *.<cluster_name>.<cluster_domain>, with cluster_dns_name in place of cluster_name where it is set. Null = node is reachable by IP only."
+  description = "Optional DNS suffix for the cluster, e.g. 'example.internal'. When set, the FQDN is <cluster_name>.<cluster_domain> and the wildcard is *.<cluster_name>.<cluster_domain>. Null = node is reachable by IP only."
   type        = string
   default     = null
 }
@@ -248,15 +218,14 @@ variable "os_image_ami_id" {
 }
 
 variable "os_image_name" {
-  description = <<-EOT
-    AMI name for the node, e.g. kube-image's self-descriptive build name. Alternative to
-    os_image_ami_id — the module resolves the ID via a data lookup scoped to this account's
-    own AMIs and the derived architecture. Accepts EC2 Name-filter wildcards (*, ?): a
-    pattern with the build date/suffix omitted resolves to the most recent matching build.
-    Ignored when os_image_ami_id is set.
-  EOT
+  description = "AMI name of a kube-images build for the node. Alternative to os_image_ami_id, which wins if set. Accepts EC2 Name wildcards (*, ?); a pattern without the build date picks the newest match."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.os_image_ami_id != null || var.os_image_name != null
+    error_message = "Set os_image_ami_id or os_image_name to a kube-images AMI. A stock image has no RKE2, so the node would never join."
+  }
 }
 
 variable "allowed_ingress_cidrs" {
@@ -329,7 +298,7 @@ variable "aws_provider_id" {
 }
 
 variable "manage_wildcard_dns_record" {
-  description = "Whether this module owns the *.<cluster>.<domain> A record. aws-cluster sets it false when ingress runs on a platform node group and points the record there itself. The explicit api.<cluster>.<domain> record is created either way, and a specific name beats a wildcard, so the join address keeps resolving to the control plane."
+  description = "Whether this module owns the *.<cluster>.<domain> A record. aws-cluster sets it false when ingress runs on a platform node group and points the record there itself. The api.<cluster>.<domain> record is always created."
   type        = bool
   default     = true
 }
@@ -366,13 +335,3 @@ variable "node_name_template" {
   }
 }
 
-variable "boot_scripts" {
-  description = "Bash scripts run on each control-plane node at its first boot, in order, before RKE2 is installed. Each sees CLUSTER_NAME, NODE_ROLE (control-plane) and NODE_NAME in its environment. A script that fails is logged by cloud-init and does not stop the node. Empty (the default) runs none."
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition     = alltrue([for script in var.boot_scripts : !can(regex("(?m)^KUBE_COMPUTE_BOOT_SCRIPT$", script))])
-    error_message = "A boot script must not have a line that is just KUBE_COMPUTE_BOOT_SCRIPT."
-  }
-}

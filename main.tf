@@ -77,7 +77,7 @@ locals {
 # detached and billed. The nodes depend on this resource, through destroy_after, to have it
 # destroyed last: Terraform destroys a dependent before its dependency. It is passed to the
 # nodes rather than set as depends_on on the modules, which would defer every data source in
-# them to apply and leave the control plane's existing-instance lookup uncountable at plan.
+# the modules to apply.
 resource "terraform_data" "volume_sweep" {
   input = {
     enabled      = var.orphan_volume_cleanup
@@ -135,7 +135,6 @@ module "control_plane" {
   workloads_extra_helm_parameters   = var.workloads_extra_helm_parameters
   workloads_helm_values_object      = var.workloads_helm_values_object
   cluster_type                      = var.cluster_type
-  cni                               = var.cni
   cert_mode                         = var.cert_mode
   platform_extra_helm_parameters    = local.platform_extra_helm_parameters
   platform_helm_values_object       = local.platform_helm_values_object
@@ -151,7 +150,6 @@ module "control_plane" {
   subnet_names                      = var.subnet_names
   subnet_min_free_ips               = local.launch_ip_count
   cluster_domain                    = var.cluster_domain
-  cluster_dns_name                  = var.cluster_dns_name
   manage_wildcard_dns_record        = var.platform_node_group == null
   hosted_zone_name                  = var.hosted_zone_name
   hosted_zone_id                    = var.hosted_zone_id
@@ -166,7 +164,6 @@ module "control_plane" {
   graceful_shutdown                 = var.graceful_shutdown
   os_auto_updates                   = var.os_auto_updates
   node_name_template                = var.control_plane_node_name_template
-  boot_scripts                      = var.boot_scripts
 }
 
 # See modules/aws-static-node/README.md for why named instances suit fixed roles.
@@ -180,12 +177,11 @@ module "static_nodes" {
   aws_region                = var.aws_region
   registration_address      = module.control_plane.registration_address
   agent_token_ssm_parameter = module.control_plane.agent_token_ssm_parameter
-  cluster_fqdn_suffix       = var.cluster_domain != null ? "${coalesce(var.cluster_dns_name, var.cluster_name)}.${var.cluster_domain}" : null
+  cluster_fqdn_suffix       = var.cluster_domain != null ? "${var.cluster_name}.${var.cluster_domain}" : null
   aws_provider_id           = local.autoscaling_enabled
   graceful_shutdown         = var.graceful_shutdown
   os_auto_updates           = var.os_auto_updates
   node_name_template        = each.value.node_name_template
-  boot_scripts              = var.boot_scripts
 
   # Ingress runs with the platform, so only the platform group answers on the external ports.
   security_group_ids = concat(
@@ -229,7 +225,7 @@ module "autoscaled_nodes" {
   subnet_id                 = module.control_plane.subnet_id
 
   # At least one, so an instance type too large for its role's caps fails on
-  # terraform_data.autoscaling_limits instead of inside this module.
+  # the data.aws_ec2_instance_type.sized postcondition instead of inside this module.
   instance_type_max_sizes = { for type, max_size in local.autoscaled_max_sizes[each.key] : type => max(1, max_size) }
 
   os_image_ami_id     = each.value.os_image_ami_id
@@ -246,17 +242,6 @@ module "autoscaled_nodes" {
   graceful_shutdown   = var.graceful_shutdown
   os_auto_updates     = var.os_auto_updates
   extra_tags          = var.extra_tags
-}
-
-resource "terraform_data" "autoscaling_limits" {
-  count = local.autoscaling_enabled ? 1 : 0
-
-  lifecycle {
-    precondition {
-      condition     = alltrue(flatten([for sizes in values(local.autoscaled_max_sizes) : [for max_size in values(sizes) : max_size >= 1]]))
-      error_message = "Instance types larger than their role's max_cpu_cores or max_memory_gib could never be launched: ${join(", ", flatten([for role, sizes in local.autoscaled_max_sizes : [for type, max_size in sizes : "${role} ${type}" if max_size < 1]]))}."
-    }
-  }
 }
 
 # The platform's controllers authenticate as the node they run on.

@@ -171,35 +171,3 @@ resource "aws_scheduler_schedule" "scale_to_zero" {
     })
   }
 }
-
-# From when the input was nightly_stop.
-
-moved {
-  from = aws_iam_role.nightly_stop
-  to   = aws_iam_role.power_schedule
-}
-
-moved {
-  from = aws_iam_role_policy.nightly_stop
-  to   = aws_iam_role_policy.power_schedule
-}
-
-moved {
-  from = aws_scheduler_schedule.nightly_stop
-  to   = aws_scheduler_schedule.stop
-}
-
-moved {
-  from = aws_scheduler_schedule.nightly_start
-  to   = aws_scheduler_schedule.start
-}
-
-moved {
-  from = aws_scheduler_schedule_group.nightly_scale_to_zero
-  to   = aws_scheduler_schedule_group.scale_to_zero
-}
-
-moved {
-  from = aws_scheduler_schedule.nightly_scale_to_zero
-  to   = aws_scheduler_schedule.scale_to_zero
-}

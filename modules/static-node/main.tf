@@ -13,7 +13,6 @@ locals {
   effective_ami_id = coalesce(
     var.os_image_ami_id,
     try(one(data.aws_ami.by_name[*].id), null),
-    try(one(data.aws_ami.almalinux10[*].id), null),
   )
 
   availability_zone = data.aws_subnet.selected.availability_zone
@@ -26,52 +25,6 @@ locals {
       ? "${var.group_name}-${var.cluster_name}-${k}"
       : replace(replace(var.node_name_template, "{zone}", substr(local.availability_zone, length(local.availability_zone) - 1, 1)), "{number}", format("%02d", n))
     )
-  }
-  boot_script_parts = {
-    for k, name in local.node_names : k => [
-      for script in var.boot_scripts : join("\n", [
-        "--${local.mime_boundary}",
-        "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
-        "",
-        "#!/bin/bash",
-        "export CLUSTER_NAME='${var.cluster_name}' NODE_ROLE='worker' NODE_NAME='${name}'",
-        "script=\"$(mktemp)\"",
-        "cat > \"$script\" <<'KUBE_COMPUTE_BOOT_SCRIPT'",
-        script,
-        "KUBE_COMPUTE_BOOT_SCRIPT",
-        "bash \"$script\" </dev/null",
-      ])
-    ]
-  }
-
-  # AlmaLinux community AMIs "likely" ship SSM Agent but not guaranteed running.
-  connectivity_user_data = <<-EOT
-    #!/bin/bash
-    systemctl enable --now amazon-ssm-agent 2>/dev/null || true
-  EOT
-
-  # AWS accepts one user_data string per instance, so MIME multipart/mixed joins
-  # the SSM-enable script to node-bootstrap's #cloud-config without re-merging
-  # the YAML. Keyed per node: unlike an ASG, each has its own payload.
-  mime_boundary = "MIMEBOUNDARY"
-
-  combined_user_data = {
-    for k, m in module.node_bootstrap : k => join("\n", concat([
-      "Content-Type: multipart/mixed; boundary=\"${local.mime_boundary}\"",
-      "MIME-Version: 1.0",
-      "",
-      "--${local.mime_boundary}",
-      "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
-      "",
-      local.connectivity_user_data,
-      ], local.boot_script_parts[k], [
-      "--${local.mime_boundary}",
-      "Content-Type: text/cloud-config; charset=\"us-ascii\"",
-      "",
-      m.cloud_init_user_data,
-      "--${local.mime_boundary}--",
-      "",
-    ]))
   }
 
   # Run on the node at join time, so the token is never in user_data.
@@ -95,61 +48,23 @@ locals {
 }
 
 # One role per group, not per node: every node reads the same SSM parameter.
-resource "aws_iam_role" "node" {
-  name_prefix = local.node_iam_name_prefix
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Action    = "sts:AssumeRole"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-  tags = local.common_tags
+module "node_iam" {
+  source = "../node-iam"
+
+  name_prefix           = local.node_iam_name_prefix
+  tags                  = local.common_tags
+  aws_region            = var.aws_region
+  attach_ebs_csi_policy = var.attach_ebs_csi_policy
+  agent_token = {
+    policy_name   = "kube-compute-${var.cluster_name}-${var.group_name}-agent-token-read"
+    ssm_parameter = var.agent_token_ssm_parameter
+  }
 }
 
-resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
+module "boot_steps" {
+  source = "../boot-steps"
 
-resource "aws_iam_role_policy_attachment" "ebs_csi" {
-  count      = var.attach_ebs_csi_policy ? 1 : 0
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
-
-# Inline JSON: mock_provider cannot evaluate data.aws_iam_policy_document.
-resource "aws_iam_role_policy" "agent_token" {
-  name = "kube-compute-${var.cluster_name}-${var.group_name}-agent-token-read"
-  role = aws_iam_role.node.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = "ssm:GetParameter"
-        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.agent_token_ssm_parameter}"
-      },
-      {
-        Effect = "Allow"
-        Action = "kms:Decrypt"
-        # By condition, not resource: alias/aws/ssm has no ARN to name here.
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com"
-          }
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_instance_profile" "node" {
-  name_prefix = local.node_iam_name_prefix
-  role        = aws_iam_role.node.name
-  tags        = local.common_tags
+  aws_provider_id = var.aws_provider_id
 }
 
 # One render per node, which is what lets set_hostname stay true here: an ASG's
@@ -171,7 +86,7 @@ module "node_bootstrap" {
   trusted_ca_in_image       = var.trusted_ca_in_image
   registry_mirror_url       = var.registry_mirror_url
   dns_servers               = var.dns_servers
-  aws_provider_id           = var.aws_provider_id
+  provider_steps            = module.boot_steps.steps
   graceful_shutdown         = var.graceful_shutdown
   os_auto_updates           = var.os_auto_updates
 }
@@ -187,7 +102,7 @@ resource "aws_instance" "node" {
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = var.security_group_ids
-  iam_instance_profile   = aws_iam_instance_profile.node.name
+  iam_instance_profile   = module.node_iam.instance_profile_name
 
   # hop_limit 3, not AWS's documented 2. Confirmed live that 2 is one hop short
   # of a pod's IMDSv2 token PUT getting its response back: IMDSv2 caps that
@@ -206,13 +121,12 @@ resource "aws_instance" "node" {
     tags                  = merge(local.common_tags, { Name = "${local.node_names[each.key]}-root" })
   }
 
-  user_data_base64            = base64gzip(local.combined_user_data[each.key])
-  user_data_replace_on_change = true
+  user_data_base64 = base64gzip(module.node_bootstrap[each.key].cloud_init_user_data)
 
   tags = merge(local.common_tags, { Name = local.node_names[each.key] })
 
   lifecycle {
     # Don't replace on AMI patch drift; remove to deliberately upgrade.
-    ignore_changes = [ami]
+    ignore_changes = [ami, user_data_base64]
   }
 }

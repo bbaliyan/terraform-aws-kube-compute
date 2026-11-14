@@ -14,7 +14,8 @@ mock_provider "aws" {
 }
 
 variables {
-  cluster_name          = "bharat"
+  os_image_ami_id       = "ami-0123456789abcdef0"
+  cluster_name          = "example"
   aws_region            = "eu-west-1"
   allowed_ingress_cidrs = ["10.0.0.0/8"]
   subnet_id             = "subnet-abc"
@@ -31,8 +32,15 @@ run "control_plane_count_3_places_one_per_az_behind_nlb" {
     }
   }
   assert {
-    condition     = length(aws_instance.control_plane_additional) == 2
+    condition     = length(aws_instance.control_plane) == 3
     error_message = "control_plane_count=3 must plan the genesis node plus 2 additional control-plane nodes"
+  }
+  assert {
+    condition = alltrue([
+      for node in values(aws_instance.control_plane) :
+      node.root_block_device[0].delete_on_termination
+    ])
+    error_message = "every control-plane node's root volume must be deleted with its instance"
   }
   assert {
     condition     = length(aws_lb.control_plane) == 1
@@ -77,7 +85,7 @@ run "control_plane_count_5_places_one_per_az" {
     }
   }
   assert {
-    condition     = length(aws_instance.control_plane_additional) == 4
+    condition     = length(aws_instance.control_plane) == 5
     error_message = "control_plane_count=5 must plan the genesis node plus 4 additional control-plane nodes"
   }
 }
@@ -93,7 +101,7 @@ run "control_plane_count_5_round_robins_when_fewer_than_five_azs" {
     }
   }
   assert {
-    condition     = length(aws_instance.control_plane_additional) == 4
+    condition     = length(aws_instance.control_plane) == 5
     error_message = "control_plane_count=5 with only 3 AZs available must still plan 5 nodes total (genesis + 4 additional), cycling through the 3 AZs rather than failing"
   }
   assert {

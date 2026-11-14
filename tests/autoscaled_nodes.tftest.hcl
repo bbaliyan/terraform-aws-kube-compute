@@ -14,7 +14,8 @@ mock_provider "aws" {
 }
 
 variables {
-  cluster_name          = "bharat"
+  os_image_name         = "kube-image-*"
+  cluster_name          = "example"
   aws_region            = "eu-west-1"
   allowed_ingress_cidrs = ["10.0.0.0/8"]
   subnet_id             = "subnet-abc"
@@ -112,7 +113,7 @@ run "an_instance_type_larger_than_its_roles_caps_is_rejected" {
     }
   }
 
-  expect_failures = [terraform_data.autoscaling_limits]
+  expect_failures = [data.aws_ec2_instance_type.sized["t3a.large"]]
 }
 
 run "a_role_without_caps_is_rejected" {

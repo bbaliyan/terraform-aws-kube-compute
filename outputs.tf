@@ -46,7 +46,7 @@ output "node_arch" {
 }
 
 output "effective_ami_id" {
-  description = "AMI ID actually used for the control-plane node(s) (explicit os_image_ami_id, an os_image_name lookup, or the AlmaLinux 10 data-lookup fallback)."
+  description = "AMI ID actually used for the control-plane node(s) (os_image_ami_id, or the os_image_name lookup)."
   value       = module.control_plane.effective_ami_id
 }
 

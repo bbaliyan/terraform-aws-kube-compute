@@ -2,21 +2,15 @@
 # node-bootstrap renders a lean cloud-init payload. It executes NOTHING: no
 # null_resource, no local-exec, no Ansible, no connection to the node. The
 # heavy half of RKE2 bootstrap (OS prep, RKE2 binaries, SELinux policy, kernel
-# modules, guest agent) is baked into a kube-image template; what's left here
+# modules, guest agent) is baked into a kube-images template; what's left here
 # is per-cluster identity, secrets, and join logic — what can't be baked into
 # a shared image.
 locals {
-  # Single source of truth for the kube-platform pin, held directly here — this
-  # is node-bootstrap's only remaining consumer, so a separate component-versions
-  # module was pure indirection. NOT the gitops_platform_repo_url/_revision
-  # variables' own defaults: an explicit null/"" passed through a module call
-  # does NOT fall through to the callee's variable default the way an omitted
-  # argument would (that convenience is specific to optional() object-type
-  # attributes) — verified the hard way on a real apply; the regression test
-  # in tests/platform_pin.tftest.hcl locks it in. coalesce() is the fix, since
-  # it treats null and "" identically. Tracks kube-platform's protected `main`
-  # branch, not a pinned SHA — branch protection is the safeguard replacing
-  # the reproducibility a SHA pin would give.
+  # The kube-platform pin, held here and not in the gitops_platform_repo_url/_revision
+  # variable defaults: an explicit null or "" passed through a module call does not
+  # fall through to a variable default. coalesce() treats null and "" alike, and
+  # tests/platform_pin.tftest.hcl locks that in. The pin tracks kube-platform's
+  # protected `main` branch, not a SHA.
   pinned_platform_repo_url = "https://github.com/bbaliyan/kube-platform.git"
   pinned_platform_revision = "main"
 
@@ -34,49 +28,33 @@ locals {
   # going to be applied — a non-empty sentinel covers both.
   argocd_needed = local.platform_app_enabled || local.workloads_app_enabled
 
-  # nsupdate's `zone` directive requires a fully-qualified (trailing-dot) name,
-  # but callers commonly pass a bare zone (e.g. "lan"). Normalize here so
-  # either form works identically, mirroring proxmox-control-plane's own
-  # local.dns_zone. Idempotent; both null and "" stay "" so the
-  # no-self-registration path is unaffected.
-  dns_self_register_zone = var.dns_self_register_zone != null && var.dns_self_register_zone != "" ? "${trimsuffix(var.dns_self_register_zone, ".")}." : ""
-
-  # nsupdate transport flags, derived exactly as the Ansible role derived them:
-  # -v forces TCP, -4/-6 pin the address family.
-  nsupdate_flags = trimspace(join(" ", compact([
-    startswith(var.dns_transport, "tcp") ? "-v" : "",
-    endswith(var.dns_transport, "4") ? "-4" : "",
-    endswith(var.dns_transport, "6") ? "-6" : "",
-  ])))
-
   is_server = contains(["server-init", "server-join"], var.node_role)
+  is_init   = var.node_role == "server-init"
+  is_join   = var.node_role == "server-join"
+  is_agent  = var.node_role == "worker"
 
-  # Whether bootstrap.sh should apply the Cilium/Argo CD manifests kube-image
-  # already baked onto every template at /opt/kube-compute/manifests/ — a
-  # per-cluster runtime decision (CNI choice, GitOps enablement), independent
-  # of whether the files exist on disk (they always do). This module renders
-  # neither: the live `helm template` render that used to happen here exceeded
-  # Proxmox's 1 MiB cicustom snippet cap on a real apply — see kube-image's
-  # packer/proxmox/build.sh and helm-values/ for where the render moved.
-  render_cilium = var.cni == "cilium" && var.node_role == "server-init"
+  # Whether bootstrap.sh applies the Cilium manifest and the Argo CD manifest. It
+  # takes both from bootstrap/rendered/ in a clone of the platform ref. This module
+  # renders neither: Argo CD is too big for Proxmox's 1 MiB cicustom snippet cap.
+  render_cilium = var.node_role == "server-init"
   render_argocd = local.argocd_needed && var.node_role == "server-init"
 
-  # Genesis-only, same as render_cilium/render_argocd — but deliberately NOT
-  # gated on argocd_needed/render_argocd: an arbitrary genesis-apply manifest
-  # (e.g. proxmox-cluster's CAPI/CAPMOX cluster-autoscaler bundle) is applied
-  # by bootstrap.sh as a one-time genesis step, independent of whether this
-  # cluster also runs a platform or workloads Argo CD Application. Tying it to
-  # render_argocd would mean gitops_platform_enabled = false callers never get
-  # the write_files entries bootstrap.sh's apply step expects. This module
-  # does not render or interpret genesis_apply_manifests' content — that
-  # happens in the composing module (e.g. proxmox-cluster), which has access
-  # to inputs (like module.control_plane's outputs) this leaf module does not.
-  effective_genesis_apply_manifests = var.node_role == "server-init" ? var.genesis_apply_manifests : []
-  effective_crd_wait_enabled        = var.node_role == "server-init" && var.cluster_autoscaler_crd_wait_enabled
-  genesis_apply_manifest_paths      = [for m in local.effective_genesis_apply_manifests : m.path]
+  # The genesis node clones the platform ref when it needs either manifest. With
+  # gitops_platform_enabled = false the pinned repo is not used: the caller names the
+  # repo, because a cluster that opted out of the platform should not silently
+  # fetch from the public default. An empty URL fails the precondition on the outputs.
+  platform_clone_needed = local.render_cilium || local.render_argocd
+  boot_platform_repo_url = !local.platform_clone_needed ? "" : (
+    var.gitops_platform_enabled ? local.effective_gitops_platform_repo_url : (
+      var.gitops_platform_repo_url != null ? var.gitops_platform_repo_url : ""
+    )
+  )
+  boot_platform_revision = local.platform_clone_needed ? local.effective_gitops_platform_revision : ""
 
-  # Rendered by templatefile()/yamlencode() here, not on the node — keeps the
-  # node free of any templating engine.
+  # Rendered by yamlencode() here, not on the node — keeps the node free of
+  # any templating engine. Both Argo CD Applications are built as objects and
+  # encoded, so a caller's value can hold any character without changing the
+  # structure around it.
   #
   # try(), not a `? :` ternary or coalesce() -- see the note on the
   # platform_helm_values_object variable declaration. try()'s own arguments
@@ -98,14 +76,6 @@ locals {
     var.workloads_helm_values_object != null
   )
 
-  # kube-platform's bootstrap chart reads a clusterAutoscalerEnabled Helm
-  # value to decide whether to deploy the cluster-autoscaler Argo CD
-  # Application (bootstrap/templates/cluster-autoscaler-app.yaml). This
-  # module doesn't own that decision (proxmox-cluster does), so it's not a
-  # hardcoded parameter here — the composing module passes it through the
-  # generic platform_extra_helm_parameters map instead. Omitting it falls
-  # back to kube-platform's own chart default (false).
-  #
   # Multi-source Application: the second source (ref: values, no chart)
   # makes platform-versions/values.yaml available to the first source's
   # `helm.valueFiles`, so bootstrap's chart templates (cilium-app.yaml,
@@ -114,91 +84,91 @@ locals {
   # .Values.k8sVersion. This is what makes bumping platform-versions/values.yaml
   # alone enough to roll Cilium/Argo CD forward kube-platform-wide, with no
   # per-cluster apply and no editing the Application templates themselves.
-  platform_app_yaml = <<-EOT
-    apiVersion: argoproj.io/v1alpha1
-    kind: Application
-    metadata:
-      name: platform
-      namespace: argocd
-    spec:
-      project: default
-      sources:
-        - repoURL: ${local.effective_gitops_platform_repo_url}
-          targetRevision: ${local.effective_gitops_platform_revision}
-          path: bootstrap
-          helm:
-            valueFiles:
-              - $values/platform/platform-versions/values.yaml
-            parameters:
-              - name: platformRepoURL
-                value: "${local.effective_gitops_platform_repo_url}"
-              - name: platformRevision
-                value: "${local.effective_gitops_platform_revision}"
-              - name: certMode
-                value: "${var.cert_mode}"
-              - name: clusterName
-                value: "${var.cluster_name}"
-              - name: clusterFqdnSuffix
-                value: "${var.cluster_fqdn_suffix != null ? var.cluster_fqdn_suffix : ""}"
-              - name: trustedCaPemB64
-                value: "${base64encode(var.trusted_ca_pem != null ? var.trusted_ca_pem : "")}"
-    %{~for name, val in var.platform_extra_helm_parameters~}
-              - name: ${name}
-                value: "${val}"
-    %{~endfor~}
-            valuesObject:
-              ${indent(14, yamlencode(local.platform_values_object))}
-        - repoURL: ${local.effective_gitops_platform_repo_url}
-          targetRevision: ${local.effective_gitops_platform_revision}
-          ref: values
-      destination:
-        server: https://kubernetes.default.svc
-        namespace: argocd
-      syncPolicy:
-        automated: { prune: true, selfHeal: true }
-        syncOptions: ["CreateNamespace=true"]
-  EOT
+  platform_helm_parameters = concat(
+    [
+      { name = "platformRepoURL", value = local.effective_gitops_platform_repo_url },
+      { name = "platformRevision", value = local.effective_gitops_platform_revision },
+      { name = "certMode", value = var.cert_mode },
+      { name = "clusterName", value = var.cluster_name },
+      { name = "clusterFqdnSuffix", value = var.cluster_fqdn_suffix != null ? var.cluster_fqdn_suffix : "" },
+      { name = "trustedCaPemB64", value = base64encode(var.trusted_ca_pem != null ? var.trusted_ca_pem : "") },
+    ],
+    local.workloads_app_enabled ? [
+      { name = "workloadsRepoURL", value = local.effective_gitops_workloads_repo_url },
+      { name = "workloadsRevision", value = var.gitops_workloads_revision },
+      { name = "workloadsPath", value = var.gitops_workloads_path },
+    ] : [],
+    [for name, val in var.platform_extra_helm_parameters : { name = name, value = val }],
+  )
+
+  platform_app = {
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata   = { name = "platform", namespace = "argocd" }
+    spec = {
+      project = "default"
+      sources = [
+        {
+          repoURL        = local.effective_gitops_platform_repo_url
+          targetRevision = local.effective_gitops_platform_revision
+          path           = "bootstrap"
+          helm = {
+            valueFiles   = ["$values/platform/platform-versions/values.yaml"]
+            parameters   = local.platform_helm_parameters
+            valuesObject = local.platform_values_object
+          }
+        },
+        {
+          repoURL        = local.effective_gitops_platform_repo_url
+          targetRevision = local.effective_gitops_platform_revision
+          ref            = "values"
+        },
+      ]
+      destination = local.argocd_app_destination
+      syncPolicy  = local.argocd_app_sync_policy
+    }
+  }
+
+  platform_app_yaml = yamlencode(local.platform_app)
+
+  argocd_app_destination = { server = "https://kubernetes.default.svc", namespace = "argocd" }
+  argocd_app_sync_policy = {
+    automated   = { prune = true, selfHeal = true }
+    syncOptions = ["CreateNamespace=true"]
+  }
 
   # Deliberately independent of the platform Application: no shared app-of-apps
   # parent, no sync-wave ordering against it. Eventual consistency — if a
   # workload needs something platform provides, Argo CD's own automated
   # selfHeal/retry converges it once platform catches up.
-  workloads_app_yaml = <<-EOT
-    apiVersion: argoproj.io/v1alpha1
-    kind: Application
-    metadata:
-      name: workloads
-      namespace: argocd
-    spec:
-      project: default
-      source:
-        repoURL: ${local.effective_gitops_workloads_repo_url}
-        targetRevision: ${var.gitops_workloads_revision}
-        path: ${var.gitops_workloads_path}
-    %{~if local.workloads_helm_configured~}
-        helm:
-    %{~if length(var.workloads_extra_helm_parameters) > 0~}
-          parameters:
-    %{~for name, val in var.workloads_extra_helm_parameters~}
-            - name: ${name}
-              value: "${val}"
-    %{~endfor~}
-    %{~endif~}
-    %{~if var.workloads_helm_values_object != null~}
-          valuesObject:
-            ${indent(12, yamlencode(local.workloads_values_object))}
-    %{~endif~}
-    %{~else~}
-        directory:
-          recurse: true
-    %{~endif~}
-      destination:
-        server: https://kubernetes.default.svc
-        namespace: argocd
-      syncPolicy:
-        automated: { prune: true, selfHeal: true }
-        syncOptions: ["CreateNamespace=true"]
-  EOT
+  workloads_helm = merge(
+    length(var.workloads_extra_helm_parameters) > 0 ? {
+      parameters = [for name, val in var.workloads_extra_helm_parameters : { name = name, value = val }]
+    } : {},
+    var.workloads_helm_values_object != null ? { valuesObject = local.workloads_values_object } : {},
+  )
+
+  workloads_app = {
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata   = { name = "workloads", namespace = "argocd" }
+    spec = {
+      project = "default"
+      source = merge(
+        {
+          repoURL        = local.effective_gitops_workloads_repo_url
+          targetRevision = var.gitops_workloads_revision
+          path           = var.gitops_workloads_path
+        },
+        local.workloads_helm_configured ? { helm = local.workloads_helm } : {},
+        local.workloads_helm_configured ? {} : { directory = { recurse = true } },
+      )
+      destination = local.argocd_app_destination
+      syncPolicy  = local.argocd_app_sync_policy
+    }
+  }
+
+  workloads_app_yaml = yamlencode(local.workloads_app)
 
   # Ported from registries.yaml.j2, including the containerd TLS pin to the
   # same anchors path the trusted CA is written to.
@@ -263,7 +233,7 @@ locals {
     ], var.control_plane_taint ? [
     "node-taint:",
     "  - \"CriticalAddonsOnly=true:NoExecute\"",
-    ] : [], var.cni == "cilium" ? [
+    ] : [], [
     "cni: cilium",
     "disable-kube-proxy: true",
     # Without this, RKE2 installs its own bundled rke2-cilium addon (a separate
@@ -271,7 +241,7 @@ locals {
     # fighting over the same cilium-operator/cilium objects in kube-system.
     "disable:",
     "  - rke2-cilium",
-  ] : []))
+  ]))
 
   node_label_block = length(var.node_labels) == 0 ? "" : join("\n", concat(
     ["node-label:"],
@@ -292,14 +262,11 @@ locals {
   # same zone a wildcard cluster DNS record (*.<cluster>.<domain>) answers
   # for. With the pod's default ndots:5, a bare external hostname like
   # "github.com" gets that search suffix tried FIRST, silently resolving to
-  # the cluster's own wildcard IP instead of the real host — confirmed on a
-  # real cluster-1 apply: Argo CD's repo-server tried to git-clone github.com
-  # against the node's own IP over HTTPS and got connection refused. Pointing
-  # kubelet at a search-domain-free resolv.conf (var.dns_servers only, no
-  # `search` line) fixes every pod on the node, without touching the node's
-  # own OS resolv.conf (kept search-enabled for host-level convenience).
-  # Opt-in via var.dns_servers so a caller that doesn't pass it keeps the old
-  # behavior rather than erroring.
+  # the cluster's own wildcard IP instead of the real host, and a clone of
+  # github.com fails with connection refused. Pointing kubelet at a
+  # search-domain-free resolv.conf (var.dns_servers only, no `search` line) fixes
+  # every pod on the node, without touching the node's own OS resolv.conf.
+  # Used only when var.dns_servers is set.
   kubelet_resolv_conf_enabled = var.dns_servers != null && length(var.dns_servers) > 0
   kubelet_resolv_conf_path    = "/etc/rancher/rke2/resolv-conf-no-search.conf"
   kubelet_resolv_conf_content = join("\n", concat(
@@ -342,53 +309,75 @@ locals {
     "",
   ])
 
-  # The one number both halves of the boot agree on. The bootstrap program is
-  # baked into the node image; this says which node.env contract it was written
-  # against, and the program refuses to run against any other. Bump both
-  # together whenever a key below is added, removed, or changes meaning.
-  node_env_contract = 1
+  # Where a server-init node looks for a live cluster before it starts etcd.
+  # Explicit addresses win; otherwise registration_address, as before.
+  rejoin_probe_addresses = (
+    length(var.rejoin_probe_addresses) > 0 ? var.rejoin_probe_addresses :
+    var.node_role == "server-init" && var.registration_address != null ? [var.registration_address] : []
+  )
 
-  # The program itself, read only so this module can check it declares the same
-  # contract number. It is never shipped from here -- the node image bakes it,
-  # and this repo is where the image's copy comes from. Reading it is what makes
-  # a bump on one side alone a failed plan instead of a failed boot.
-  bootstrap_program = file("${path.module}/files/bootstrap.sh")
+  # A joining server is a server-join node, or a server-init node that can find a live
+  # cluster at boot and become one.
+  can_rejoin    = local.is_init && length(local.rejoin_probe_addresses) > 0
+  joins_cluster = local.is_join || local.can_rejoin
 
-  # Configuration for the baked bootstrap program, as data. These used to be
-  # templatefile() arguments, which rendered a per-node copy of a ~9.6 KB script
-  # into user data -- and a genesis node carried three of them, its own plus one
-  # inside each worker group's cloud-init in a CAPI bundle. That is what exceeded
-  # EC2's 16384-byte decoded user-data limit. The program is the image's business
-  # now; only these values are this module's.
+  # The steps of the boot program, in the order they run. A step is in the program only
+  # when it applies to this node. Every file in files/steps must be listed here, and
+  # tests/boot_steps.tftest.hcl verifies that.
+  boot_step_catalog = [
+    { name = "prelude", file = "00-prelude.sh", enabled = true },
+    { name = "skew-check", file = "01-skew-check.sh", enabled = local.is_server },
+    { name = "rejoin-probe", file = "10-rejoin-probe.sh", enabled = local.can_rejoin },
+    { name = "node-config-server", file = "20-node-config-server.sh", enabled = local.is_server },
+    { name = "node-config-agent", file = "20-node-config-agent.sh", enabled = local.is_agent },
+    { name = "platform-clone", file = "30-platform-clone.sh", enabled = local.platform_clone_needed },
+    { name = "api-skew-check", file = "31-api-skew-check.sh", enabled = local.joins_cluster },
+    { name = "genesis-cilium-manifest", file = "40-genesis-cilium-manifest.sh", enabled = local.render_cilium },
+    { name = "genesis-extra-manifests", file = "41-genesis-extra-manifests.sh", enabled = local.is_init && length(var.extra_server_manifests) > 0 },
+    { name = "start-server-init", file = "50-start-server-init.sh", enabled = local.is_init },
+    { name = "start-server-join", file = "51-start-server-join.sh", enabled = local.joins_cluster },
+    { name = "start-agent", file = "52-start-agent.sh", enabled = local.is_agent },
+    { name = "wait-ready-server", file = "60-wait-ready-server.sh", enabled = local.is_server },
+    { name = "wait-ready-agent", file = "61-wait-ready-agent.sh", enabled = local.is_agent },
+    { name = "genesis-cilium-handoff", file = "70-genesis-cilium-handoff.sh", enabled = local.render_cilium },
+    { name = "genesis-argocd", file = "71-genesis-argocd.sh", enabled = local.render_argocd },
+    { name = "finish", file = "99-finish.sh", enabled = true },
+  ]
+
+  # tflint-ignore: terraform_unused_declarations # read by tests/boot_steps.tftest.hcl
+  boot_step_files_on_disk = fileset("${path.module}/files/steps", "*.sh")
+
+  boot_steps_enabled = [for step in local.boot_step_catalog : step if step.enabled]
+
+  bootstrap_program = join("", [for step in local.boot_steps_enabled : file("${path.module}/files/steps/${step.file}")])
+
+  # The program as it travels in user data. Lines whose first non-blank character
+  # is "#" are dropped, except the shebang. This is safe only while no heredoc body
+  # line starts with "#"; tests/bootstrap_inline.tftest.hcl enforces that.
+  bootstrap_program_inline = replace(local.bootstrap_program, "/(?m)^[ \t]*#([^!\n][^\n]*)?\n/", "")
+
+  platform_required_files = concat(
+    local.render_cilium ? ["bootstrap/rendered/cilium.yaml"] : [],
+    local.render_argocd ? ["bootstrap/rendered/argocd.yaml"] : [],
+  )
+
+  # Configuration for the bootstrap program, as data.
   #
   # Every key is always defined (empty where a role does not use it) so the
   # program can run under `set -u`.
   node_config_values = {
-    KUBE_COMPUTE_CONTRACT         = tostring(local.node_env_contract)
-    NODE_ROLE                     = var.node_role
-    CNI                           = var.cni
-    CLUSTER_NAME                  = var.cluster_name
-    REGISTRATION_ADDRESS          = var.registration_address != null ? var.registration_address : ""
-    TRUSTED_CA_ENABLED            = var.trusted_ca_pem != null ? "1" : "0"
-    REGISTRY_MIRROR_URL           = var.registry_mirror_url != null ? var.registry_mirror_url : ""
-    ISCSI_INITIATOR_ENABLED       = var.iscsi_initiator_enabled ? "1" : "0"
-    ISCSI_INITIATOR_LABEL         = coalesce(var.node_fqdn_label, var.node_name)
-    DNS_SELF_REGISTER_ZONE        = local.dns_self_register_zone
-    DNS_SELF_REGISTER_RECORD_NAME = var.dns_self_register_record_name != null ? var.dns_self_register_record_name : ""
-    DNS_SELF_REGISTER_TTL         = tostring(var.dns_self_register_ttl)
-    DNS_SERVER_ADDRESS            = var.dns_server_address != null ? var.dns_server_address : ""
-    DNS_SERVER_PORT               = tostring(var.dns_server_port)
-    NSUPDATE_FLAGS                = local.nsupdate_flags
-    TSIG_KEY_NAME                 = var.tsig_key_name != null ? var.tsig_key_name : ""
-    TSIG_KEY_ALGORITHM            = var.tsig_key_algorithm
-    ARGOCD_NEEDED                 = local.render_argocd ? "1" : "0"
-    PLATFORM_APP_ENABLED          = local.platform_app_enabled ? "1" : "0"
-    WORKLOADS_APP_ENABLED         = local.workloads_app_enabled ? "1" : "0"
-    CAPI_CRD_WAIT_ENABLED         = local.effective_crd_wait_enabled ? "1" : "0"
-    CAPI_INSTALL_BAKED            = var.cluster_autoscaler_capi_install_baked ? "1" : "0"
-    # Space-separated because the program word-splits it. Every path is composed
-    # by this module under /opt/kube-compute/manifests, so none can contain one.
-    GENESIS_APPLY_MANIFESTS = join(" ", local.genesis_apply_manifest_paths)
+    NODE_ROLE            = var.node_role
+    REGISTRATION_ADDRESS = var.registration_address != null ? var.registration_address : ""
+    # Space-separated because the program word-splits it. Addresses are IPs or
+    # FQDNs, so none can contain one.
+    REJOIN_PROBE_ADDRESSES  = join(" ", local.rejoin_probe_addresses)
+    PLATFORM_REPO_URL       = local.boot_platform_repo_url
+    PLATFORM_REVISION       = local.boot_platform_revision
+    PLATFORM_REQUIRED_FILES = join(" ", local.platform_required_files)
+    PLATFORM_APP_ENABLED    = local.platform_app_enabled ? "1" : "0"
+    WORKLOADS_APP_ENABLED   = local.workloads_app_enabled ? "1" : "0"
+    # Empty when no CA is set.
+    TRUSTED_CA_FILE = local.trusted_ca_present ? local.trusted_ca_path : ""
   }
 
   # Single-quoted with the POSIX '\'' escape, the same way secrets.env is, so
@@ -397,69 +386,54 @@ locals {
     [
       "# SPDX-License-Identifier: Apache-2.0",
       "# Written by kube-compute's node-bootstrap module, read by the bootstrap",
-      "# program baked into this image. Configuration only -- tokens and the TSIG",
-      "# secret live in secrets.env, which is 0600.",
+      "# program. Configuration only.",
     ],
     [for k in sort(keys(local.node_config_values)) : "${k}='${replace(local.node_config_values[k], "'", "'\\''")}'"],
     [""],
   ))
 
-  # Everything in config.yaml that is known before this node boots, in the order
-  # config.yaml needs it, as one fragment the program appends to the lines only
-  # the node itself can produce (its own IP, the fetched agent token, the
-  # rejoin-probe result). Assembled here rather than on the node: which blocks a
-  # role gets is this module's business, and it keeps the program free of any
-  # label, taint or SAN logic.
+  # The RKE2 config known at plan time, written to /etc/rancher/rke2/config.yaml by
+  # cloud-init. What only the node knows (its own IP, the rejoin result, the fetched
+  # agent token) goes into a drop-in at boot. Tokens are JSON strings, which is valid
+  # YAML: a token that starts with "*" would otherwise be read as an alias.
   #
-  # Byte-for-byte what the heredocs in the old rendered script emitted, including
-  # the blank lines an empty block leaves behind -- inert in YAML, and worth more
-  # than the bytes as proof this change moved the payload without rewriting it.
-  config_static = var.node_role == "worker" ? join("\n", [
+  # An empty block leaves a blank line behind. It is inert in YAML.
+  join_server_line = var.registration_address != null ? "server: https://${var.registration_address}:9345" : ""
+  tls_san_section  = local.static_tls_san_block == "" ? "" : "tls-san:\n${local.static_tls_san_block}"
+
+  rke2_config = local.is_agent ? join("\n", [
+    local.join_server_line,
     local.node_label_block,
     local.node_taint_block,
     local.kubelet_resolv_conf_block,
     "",
     ]) : join("\n", [
-    local.static_tls_san_block,
+    local.is_join ? local.join_server_line : "",
+    var.cluster_token != null ? "token: ${jsonencode(var.cluster_token)}" : "",
+    local.is_init && var.cluster_agent_token != null ? "agent-token: ${jsonencode(var.cluster_agent_token)}" : "",
+    local.tls_san_section,
     local.server_static_block,
     local.kubelet_resolv_conf_block,
     "",
   ])
 
-  # Every key is always defined (empty where a role doesn't use it) so
-  # bootstrap.sh can run under `set -u` after sourcing it. Single-quoted with
-  # the POSIX '\'' escape so any character in a token is safe to embed.
-  secret_values = {
-    CLUSTER_TOKEN             = var.node_role != "worker" && var.cluster_token != null ? var.cluster_token : ""
-    CLUSTER_AGENT_TOKEN       = var.node_role == "server-init" && var.cluster_agent_token != null ? var.cluster_agent_token : ""
-    AGENT_TOKEN_FETCH_COMMAND = var.node_role == "worker" && var.agent_token_fetch_command != null ? var.agent_token_fetch_command : ""
-    TSIG_KEY_SECRET           = var.tsig_key_secret != null ? var.tsig_key_secret : ""
-  }
-
-  secrets_env = join("\n", concat(
-    ["# SPDX-License-Identifier: Apache-2.0"],
-    [for k in sort(keys(local.secret_values)) : "${k}='${replace(local.secret_values[k], "'", "'\\''")}'"],
-    [""],
-  ))
+  # Worker only. The fetch command can hold a literal token, so the file is 0600.
+  secrets_env = join("\n", [
+    "# SPDX-License-Identifier: Apache-2.0",
+    "AGENT_TOKEN_FETCH_COMMAND='${replace(var.agent_token_fetch_command != null ? var.agent_token_fetch_command : "", "'", "'\\''")}'",
+    "",
+  ])
 
   # Every entry is base64-encoded (encoding: b64) — not cosmetic: it makes the
   # outer cloud-config document immune to its own payloads (a PEM, an
   # operator-supplied manifest, a token containing a colon can never break
   # the surrounding YAML), and lets the whole document be safely produced by
   # yamlencode() rather than a text template. Cilium/Argo CD's own manifests
-  # are NOT among these entries — kube-image bakes them directly onto the
-  # template at /opt/kube-compute/manifests/, and bootstrap.sh reads them
-  # from there; embedding Argo CD's ~1.9 MB chart render here is exactly what
-  # used to exceed Proxmox's 1 MiB cicustom snippet cap.
+  # are NOT among these entries: bootstrap.sh reads them from a clone of the
+  # platform ref. Embedding Argo CD's ~2 MB manifest here would exceed Proxmox's
+  # 1 MiB cicustom snippet cap.
   write_files = concat(
     [
-      {
-        path        = "/opt/kube-compute/secrets.env"
-        permissions = "0600"
-        owner       = "root:root"
-        encoding    = "b64"
-        content     = base64encode(local.secrets_env)
-      },
       {
         path        = "/opt/kube-compute/node.env"
         permissions = "0644"
@@ -468,16 +442,27 @@ locals {
         content     = base64encode(local.node_env)
       },
       {
-        # Always written, even when every block in it is empty: the program cats
-        # it unconditionally, and a conditional file would buy nothing but a
-        # missing-file branch on the node.
-        path        = "/opt/kube-compute/rke2-config-static.yaml"
+        path        = "/opt/kube-compute/bootstrap.sh"
+        permissions = "0755"
+        owner       = "root:root"
+        encoding    = "b64"
+        content     = base64encode(local.bootstrap_program_inline)
+      },
+      {
+        path        = "/etc/rancher/rke2/config.yaml"
         permissions = "0600"
         owner       = "root:root"
         encoding    = "b64"
-        content     = base64encode(local.config_static)
+        content     = base64encode(local.rke2_config)
       },
     ],
+    !local.is_agent ? [] : [{
+      path        = "/opt/kube-compute/secrets.env"
+      permissions = "0600"
+      owner       = "root:root"
+      encoding    = "b64"
+      content     = base64encode(local.secrets_env)
+    }],
     var.trusted_ca_pem == null || var.trusted_ca_in_image ? [] : [{
       path        = "/etc/pki/ca-trust/source/anchors/trusted-ca.crt"
       permissions = "0644"
@@ -536,22 +521,7 @@ locals {
       encoding    = "b64"
       content     = base64encode(local.workloads_app_yaml)
     }],
-    [
-      # gz+b64, unlike every other file here: a genesis manifest is the one
-      # payload large enough to matter against EC2's 25600-byte cap on encoded
-      # user data, and a CAPI bundle carries a base64 bootstrap Secret per worker
-      # group, which plain b64 would then encode a second time. Only clusters
-      # that have genesis manifests are affected, so no existing instance's user
-      # data changes.
-      for m in local.effective_genesis_apply_manifests : {
-        path        = m.path
-        permissions = "0600"
-        owner       = "root:root"
-        encoding    = "gz+b64"
-        content     = base64gzip(m.content)
-      }
-    ],
-    !local.is_server ? [] : [
+    !local.is_init ? [] : [
       for name in sort(keys(var.extra_server_manifests)) : {
         path        = "/opt/kube-compute/server-manifests/${name}"
         permissions = "0600"
@@ -560,18 +530,51 @@ locals {
         content     = base64encode(var.extra_server_manifests[name])
       }
     ],
+    [
+      for file in var.provider_files : {
+        path        = file.path
+        permissions = file.permissions
+        owner       = "root:root"
+        encoding    = "b64"
+        content     = base64encode(file.content)
+      }
+    ],
   )
 
-  # A config.yaml.d drop-in, because only the node itself knows its instance.
-  aws_instance_script = <<-EOT
-    set -eu
-    TOKEN=$(curl -sSf --retry 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)
-    ZONE=$(curl -sSf --retry 5 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
-    INSTANCE_ID=$(curl -sSf --retry 5 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-    INSTANCE_TYPE=$(curl -sSf --retry 5 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
-    install -d -m 0755 /etc/rancher/rke2/config.yaml.d
-    printf 'kubelet-arg+:\n  - "provider-id=aws:///%s/%s"\nnode-label+:\n  - "node.kubernetes.io/instance-type=%s"\n' "$ZONE" "$INSTANCE_ID" "$INSTANCE_TYPE" >/etc/rancher/rke2/config.yaml.d/50-aws-instance.yaml
-  EOT
+  trusted_ca_path = "/etc/pki/ca-trust/source/anchors/trusted-ca.crt"
+
+  # Not sensitive: whether a CA is set says nothing about it, and it decides which steps run.
+  trusted_ca_present = nonsensitive(var.trusted_ca_pem != null)
+
+  # A CA that the image bakes is not in user data, so the guard names the cause when it
+  # is missing: containerd's TLS pin in registries.yaml points at this file.
+  # runcmd does not stop at a failed command, so a failure leaves a marker file and the boot
+  # program stops on it.
+  trusted_ca_command = [
+    "/bin/sh", "-c",
+    join("; ", concat(
+      var.trusted_ca_in_image ? ["test -s ${local.trusted_ca_path} || { echo 'kube-compute: no trusted CA at ${local.trusted_ca_path}: trusted_ca_in_image is set and the image does not bake one' >&2; touch /run/kube-compute-step-failed; exit 1; }"] : [],
+      ["update-ca-trust extract || { echo 'kube-compute: update-ca-trust failed' >&2; touch /run/kube-compute-step-failed; exit 1; }"],
+    )),
+  ]
+
+  # The cloud-init commands that run before the boot program, in order. The provider
+  # modules supply the first ones.
+  commands_before_boot = concat(
+    var.provider_steps,
+    [{ name = "kubelet-reserved", commands = [["/bin/sh", "-c", local.kubelet_reserved_script]] }],
+    local.trusted_ca_present ? [{ name = "trusted-ca", commands = [local.trusted_ca_command] }] : [],
+    local.graceful_shutdown_enabled ? [{ name = "graceful-shutdown", commands = [["systemctl", "restart", "systemd-logind"]] }] : [],
+  )
+
+  commands_after_boot = var.os_auto_updates ? [{ name = "os-auto-updates", commands = [["/bin/sh", "-c", local.os_auto_updates_script]] }] : []
+
+  # Every step of this node's boot, in the order it runs.
+  boot_steps = concat(
+    [for step in local.commands_before_boot : step.name],
+    [for step in local.boot_steps_enabled : step.name],
+    [for step in local.commands_after_boot : step.name],
+  )
 
   # Sized on the node from its own memory and cores. Memory is the smaller of EKS's 11 MiB
   # per pod plus 255 MiB, at RKE2's default of 110 pods, and GKE's older tiers of 25% of the
@@ -594,8 +597,11 @@ locals {
     printf 'kubelet-arg+:\n  - "kube-reserved=cpu=%sm,memory=%sMi"\n  - "system-reserved=cpu=100m,memory=256Mi"\n  - "eviction-hard=memory.available<100Mi,nodefs.available<10%%,imagefs.available<15%%,nodefs.inodesFree<5%%,imagefs.inodesFree<5%%"\n' "$KUBE_CPU_M" "$KUBE_MEM_MIB" >/etc/rancher/rke2/config.yaml.d/40-kubelet-reserved.yaml
   EOT
 
+  # This runs after the boot program. The marker makes a failed boot fail this command too,
+  # so cloud-init does not report success for a node that did not join.
   os_auto_updates_script = <<-EOT
     set -eu
+    test -e /run/kube-compute-boot-complete || { echo 'kube-compute: the boot program did not complete' >&2; exit 1; }
     dnf install -y dnf-automatic yum-utils
     dnf config-manager --save --setopt=excludepkgs=rke2-server,rke2-agent,rke2-common
     install -d -m 0755 /etc/systemd/system/dnf-automatic-install.timer.d
@@ -608,7 +614,7 @@ locals {
   # hostname, so every node in a cluster MUST get a distinct value here.
   # var.set_hostname = false omits both keys entirely (see that variable's
   # description) — needed only when this same rendered payload is shared
-  # across multiple VMs, e.g. a CAPI MachineDeployment's replicas.
+  # across multiple VMs, e.g. a scale set's replicas.
   cloud_config = merge(
     {
       preserve_hostname = false
@@ -626,17 +632,9 @@ locals {
       prefer_fqdn_over_hostname = false
       write_files               = local.write_files
       runcmd = concat(
-        var.aws_provider_id ? [["/bin/sh", "-c", local.aws_instance_script]] : [],
-        [["/bin/sh", "-c", local.kubelet_reserved_script]],
-        local.graceful_shutdown_enabled ? [["systemctl", "restart", "systemd-logind"]] : [],
-        [
-          # The program is baked into the image, not written above. An image
-          # predating it would otherwise fail with cloud-init's own bare "No such
-          # file or directory" against a path this module used to write itself.
-          ["/bin/sh", "-c", "test -x /opt/kube-compute/bootstrap.sh || { echo 'kube-compute: this image bakes no /opt/kube-compute/bootstrap.sh, which node.env contract ${local.node_env_contract} requires -- rebuild the node image from a ref that bakes it' >&2; exit 1; }"],
-          ["/opt/kube-compute/bootstrap.sh"],
-        ],
-        var.os_auto_updates ? [["/bin/sh", "-c", local.os_auto_updates_script]] : [],
+        concat([], [for step in local.commands_before_boot : step.commands]...),
+        [["/opt/kube-compute/bootstrap.sh"]],
+        concat([], [for step in local.commands_after_boot : step.commands]...),
       )
     },
     var.set_hostname ? { hostname = var.node_name } : {},
